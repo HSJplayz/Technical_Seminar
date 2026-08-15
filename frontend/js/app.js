@@ -146,24 +146,23 @@
   function movieCard(m) {
     const card = el("div", "card");
     card.addEventListener("click", () => (location.hash = `#/movie/${m.movieId}`));
-    const body = el("div", "card-body");
-    body.innerHTML = `
+    card.innerHTML = `${posterHTML(m)}
+      <div class="card-body">
         <div class="card-title">${escapeHtml(m.title_clean || m.title)}</div>
         <div class="card-meta">
           ${m.year ? `<span>${m.year}</span>` : ""}
           ${stars(m.avg_rating)} ${m.avg_rating ? `<span>${m.avg_rating}</span>` : ""}
           ${m.rating_count ? `<span>· ${m.rating_count.toLocaleString()} ratings</span>` : ""}
         </div>
-        ${m.score != null ? `<div class="card-tags">match ${Math.min(99, Math.round(Math.abs(m.score) * 100)).toLocaleString()}%</div>` : ""}`;
+        ${m.score != null ? `<div class="card-tags">match ${Math.min(99, Math.round(Math.abs(m.score) * 100)).toLocaleString()}%</div>` : ""}
+      </div>`;
     const actions = el("div", "card-actions");
     const buy = el("button", "buy-btn", m.similar ? "" : "See details");
     buy.addEventListener("click", e => { e.stopPropagation(); location.hash = `#/movie/${m.movieId}`; });
     actions.appendChild(buy);
     actions.appendChild(compactBasketButton(m.movieId, "favorite"));
     actions.appendChild(compactBasketButton(m.movieId, "watch_later"));
-    body.appendChild(actions);
-    card.appendChild(posterHTML(m));
-    card.appendChild(body);
+    card.querySelector(".card-body").appendChild(actions);
     return card;
   }
 
