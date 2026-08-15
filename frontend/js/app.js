@@ -8,6 +8,9 @@
     user: null,
     genres: [],
     page: 1,
+    fav: new Set(),
+    wl: new Set(),
+    listCounts: { favorite: 0, watch_later: 0 },
   };
 
   // ------------------------------------------------------------ api helpers
@@ -62,10 +65,12 @@
   function posterHTML(m) {
     const bg = hashColor(m.movieId);
     const genres = (m.genre_list || []).slice(0, 2).join(" · ");
-    return `<div class="poster" style="background:linear-gradient(160deg, ${bg}, ${bg}dd 55%, #0d0f12)">
-      ${genres ? `<span class="p-genres">${escapeHtml(genres)}</span>` : ""}
-      <span class="p-title">${escapeHtml(m.title_clean || m.title)}</span>
-    </div>`;
+    const inner = `${genres ? `<span class="p-genres">${escapeHtml(genres)}</span>` : ""}
+      <span class="p-title">${escapeHtml(m.title_clean || m.title)}</span>`;
+    const img = m.poster_url
+      ? `<img class="poster-img" src="${escapeHtml(m.poster_url)}" alt="${escapeHtml(m.title_clean || m.title)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`
+      : "";
+    return `<div class="poster" style="background:linear-gradient(160deg, ${bg}, ${bg}dd 55%, #0d0f12)">${inner}${img}</div>`;
   }
 
   function stars(rating) {
@@ -74,20 +79,91 @@
     return `<span class="rating-stars">${"★".repeat(full)}${"☆".repeat(5 - full)}</span>`;
   }
 
+  function updateBasketBadge() {
+    const el2 = $("#basket-count");
+    if (!el2) return;
+    const n = state.listCounts.favorite + state.listCounts.watch_later;
+    el2.textContent = n ? ` (${n})` : "";
+  }
+
+  async function loadLists() {
+    if (!state.token) return;
+    try {
+      const s = await api("/api/lists/summary");
+      state.fav = new Set(s.favorite.map(x => x.movieId));
+      state.wl = new Set(s.watch_later.map(x => x.movieId));
+      state.listCounts = s.counts;
+      updateBasketBadge();
+    } catch (e) { /* not signed in */ }
+  }
+
+  function basketButton(movieId, type, initial) {
+    const isFav = type === "favorite";
+    const set = isFav ? state.fav : state.wl;
+    if (initial !== undefined) { initial ? set.add(movieId) : set.delete(movieId); }
+    const label = isFav ? "♥ <span class='bs-lbl'>Favorite</span>" : "⏱ <span class='bs-lbl'>Watch later</span>";
+    const b = el("button", "bs-btn" + (set.has(movieId) ? " on" : ""), label);
+    b.title = isFav ? "Add to favorites" : "Add to watch later";
+    b.addEventListener("click", async e => {
+      e.stopPropagation();
+      if (!state.token) { openAuthModal("login"); return; }
+      const on = set.has(movieId);
+      try {
+        await api(`/api/list/${type}/${movieId}`, { method: on ? "DELETE" : "PUT" });
+        if (on) set.delete(movieId); else set.add(movieId);
+        const key = isFav ? "favorite" : "watch_later";
+        state.listCounts[key] += on ? -1 : 1;
+        b.classList.toggle("on", !on);
+        updateBasketBadge();
+        toast(on ? `Removed from ${isFav ? "favorites" : "watch later"}` : `Added to ${isFav ? "favorites" : "watch later"} — saved to your basket`);
+      } catch (err) { toast(err.message); }
+    });
+    return b;
+  }
+
+  function compactBasketButton(movieId, type) {
+    const isFav = type === "favorite";
+    const set = isFav ? state.fav : state.wl;
+    const b = el("button", "bs-btn" + (set.has(movieId) ? " on" : ""), isFav ? "♥" : "⏱");
+    b.title = isFav ? "Add to favorites" : "Add to watch later";
+    b.addEventListener("click", async e => {
+      e.stopPropagation();
+      if (!state.token) { openAuthModal("login"); return; }
+      const on = set.has(movieId);
+      try {
+        await api(`/api/list/${type}/${movieId}`, { method: on ? "DELETE" : "PUT" });
+        if (on) set.delete(movieId); else set.add(movieId);
+        const key = isFav ? "favorite" : "watch_later";
+        state.listCounts[key] += on ? -1 : 1;
+        b.classList.toggle("on", !on);
+        updateBasketBadge();
+        toast(on ? `Removed from ${isFav ? "favorites" : "watch later"}` : `Added to ${isFav ? "favorites" : "watch later"}`);
+      } catch (err) { toast(err.message); }
+    });
+    return b;
+  }
+
   function movieCard(m) {
     const card = el("div", "card");
     card.addEventListener("click", () => (location.hash = `#/movie/${m.movieId}`));
-    card.innerHTML = `${posterHTML(m)}
-      <div class="card-body">
+    const body = el("div", "card-body");
+    body.innerHTML = `
         <div class="card-title">${escapeHtml(m.title_clean || m.title)}</div>
         <div class="card-meta">
           ${m.year ? `<span>${m.year}</span>` : ""}
           ${stars(m.avg_rating)} ${m.avg_rating ? `<span>${m.avg_rating}</span>` : ""}
           ${m.rating_count ? `<span>· ${m.rating_count.toLocaleString()} ratings</span>` : ""}
         </div>
-        ${m.score != null ? `<div class="card-tags">match ${Math.min(99, Math.round(Math.abs(m.score) * 100)).toLocaleString()}%</div>` : ""}
-        <button class="buy-btn" onclick="event.stopPropagation()">${m.similar ? "" : "See details"}</button>
-      </div>`;
+        ${m.score != null ? `<div class="card-tags">match ${Math.min(99, Math.round(Math.abs(m.score) * 100)).toLocaleString()}%</div>` : ""}`;
+    const actions = el("div", "card-actions");
+    const buy = el("button", "buy-btn", m.similar ? "" : "See details");
+    buy.addEventListener("click", e => { e.stopPropagation(); location.hash = `#/movie/${m.movieId}`; });
+    actions.appendChild(buy);
+    actions.appendChild(compactBasketButton(m.movieId, "favorite"));
+    actions.appendChild(compactBasketButton(m.movieId, "watch_later"));
+    body.appendChild(actions);
+    card.appendChild(posterHTML(m));
+    card.appendChild(body);
     return card;
   }
 
@@ -101,7 +177,10 @@
   // ------------------------------------------------------------ auth
   async function refreshUser() {
     if (!state.token) { state.user = null; return; }
-    try { state.user = await api("/api/me"); } catch (e) { state.token = null; localStorage.removeItem(TOKEN_KEY); }
+    try {
+      state.user = await api("/api/me");
+      await loadLists();
+    } catch (e) { state.token = null; localStorage.removeItem(TOKEN_KEY); }
   }
 
   function renderAccount() {
@@ -112,6 +191,8 @@
         <button class="chip ghost" id="btn-logout">Sign out</button>`;
       $("#btn-logout").addEventListener("click", () => {
         state.token = null; localStorage.removeItem(TOKEN_KEY); state.user = null;
+        state.fav = new Set(); state.wl = new Set(); state.listCounts = { favorite: 0, watch_later: 0 };
+        updateBasketBadge();
         toast("Signed out"); renderAccount(); render();
       });
     } else {
@@ -167,6 +248,7 @@
     home: homeView,
     browse: browseView,
     movie: movieView,
+    basket: basketView,
     dashboard: dashboardView,
   };
 
@@ -207,6 +289,16 @@
       </div>`;
     app.innerHTML = "";
     app.appendChild(hero);
+    app.appendChild(el("h2", "section-title", "Shop by category <small>· genres across the catalog</small>"));
+    const cats = [...state.genres].sort((a, b) => b.count - a.count).slice(0, 12);
+    const cg = el("div", "cat-grid");
+    cats.forEach(c => {
+      const a = el("a", "cat-card",
+        `<span class="cat-name">${escapeHtml(c.name)}</span><span class="cat-count">${c.count.toLocaleString()} titles</span>`);
+      a.href = "#/browse?genre=" + encodeURIComponent(c.name);
+      cg.appendChild(a);
+    });
+    app.appendChild(cg);
     app.appendChild(el("h2", "section-title",
       `Recommended for you <small>· ${state.user ? "federated model + collaborative filtering" : "popular on MovieStore — sign in for personalization"}</small>`));
     app.appendChild(grid(rec.items));
@@ -215,12 +307,15 @@
   }
 
   // ------------------------------------------------------------ browse
-  let browseState = { q: "", genre: "", yearMin: "", yearMax: "", sort: "relevance", page: 1 };
+  function freshBrowse() { return { q: "", genre: "", yearMin: "", yearMax: "", sort: "relevance", page: 1 }; }
+  let browseState = freshBrowse();
 
   async function browseView(app) {
+    browseState = freshBrowse();
     const params = new URLSearchParams(location.hash.split("?")[1] || "");
     if (params.get("q") !== null) browseState.q = params.get("q");
     if (params.get("genre") !== null) browseState.genre = params.get("genre");
+    if (params.get("sort")) browseState.sort = params.get("sort");
     if (params.get("page")) browseState.page = +params.get("page");
 
     app.innerHTML = `
@@ -244,12 +339,12 @@
 
     const gSel = $("#f-genre");
     gSel.innerHTML = `<option value="">All genres</option>` +
-      state.genres.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
+      state.genres.map(g => `<option value="${escapeHtml(g.name)}">${escapeHtml(g.name)} (${g.count.toLocaleString()})</option>`).join("");
     if (browseState.genre) gSel.value = browseState.genre;
     $("#f-yearmin").value = browseState.yearMin;
     $("#f-yearmax").value = browseState.yearMax;
     $("#f-sort").value = browseState.sort;
-    $("#f-reset").addEventListener("click", () => { browseState = { q: "", genre: "", yearMin: "", yearMax: "", sort: "relevance", page: 1 }; render(); });
+    $("#f-reset").addEventListener("click", () => { browseState = freshBrowse(); render(); });
 
     const refresh = async () => {
       $("#browse-results").innerHTML = `<div class="spinner"></div>`;
@@ -293,6 +388,7 @@
     detail.innerHTML = `
       <div class="detail-top">
         <div class="detail-poster" style="background:linear-gradient(160deg, ${hashColor(id)}, ${hashColor(id)}cc 55%, #0d0f12)">
+          ${d.poster_url ? `<img class="poster-img" src="${escapeHtml(d.poster_url)}" alt="${escapeHtml(d.title_clean || d.title)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
           <div class="p-title" style="position:absolute;bottom:16px;left:14px;right:14px;font-size:19px;font-weight:700;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.8)">${escapeHtml(d.title_clean || d.title)}</div>
         </div>
         <div class="detail-info">
@@ -306,6 +402,7 @@
             <div class="rate-stars" id="rate-stars"></div>
             ${state.user ? `<button class="btn-ghost" id="btn-clear-rate" ${d.my_rating ? "" : "style='display:none'"}>Clear</button>` : ""}
           </div>
+          <div class="detail-actions" id="detail-actions" style="display:flex;gap:10px;margin-top:16px"></div>
           <div style="margin-top:14px"><button class="buy-btn" style="max-width:220px" onclick="location.hash='#/browse'">Browse similar catalog</button></div>
         </div>
       </div>
@@ -313,6 +410,10 @@
         <h3 class="section-title" style="margin-top:8px">Customers also viewed</h3>
       </div>`;
     app.appendChild(detail);
+
+    const dActions = detail.querySelector("#detail-actions");
+    dActions.appendChild(basketButton(id, "favorite", !!(d.lists && d.lists.favorite)));
+    dActions.appendChild(basketButton(id, "watch_later", !!(d.lists && d.lists.watch_later)));
 
     const similarBox = detail.querySelector(".similar-section");
     similarBox.appendChild(grid(d.similar));
@@ -361,6 +462,39 @@
       await api("/api/rate", { method: "POST", body: JSON.stringify({ movieId: +location.hash.split("/")[2], rating: 0.5 }) });
       location.hash = `#/movie/${location.hash.split("/")[2]}`;
     });
+  }
+
+  // ------------------------------------------------------------ basket
+  async function basketView(app) {
+    if (!state.user) {
+      app.innerHTML = `<div class="panel" style="max-width:520px;margin:40px auto;text-align:center">
+        <h3>Your basket</h3>
+        <p>Sign in to save movies to <b>Favorites</b> and <b>Watch later</b>. Your basket is stored on your account,
+        so it stays after you log out — and later it feeds your federated training signal.</p>
+        <div style="display:flex;gap:10px;justify-content:center">
+          <button class="btn-primary" id="bk-login">Sign in</button>
+          <button class="btn-ghost" id="bk-reg">Register</button>
+        </div></div>`;
+      $("#bk-login").addEventListener("click", () => openAuthModal("login"));
+      $("#bk-reg").addEventListener("click", () => openAuthModal("register"));
+      return;
+    }
+    app.innerHTML = `<div class="spinner"></div>`;
+    const s = await api("/api/lists/summary");
+    app.innerHTML = "";
+    const head = el("div", "basket-head");
+    head.appendChild(el("h2", "section-title", "My Basket"));
+    head.appendChild(el("span", "pill gray", `${s.counts.favorite} favorite · ${s.counts.watch_later} watch later`));
+    app.appendChild(head);
+
+    const favHead = el("div", "section-head");
+    favHead.appendChild(el("h3", "", "Favorites"));
+    app.appendChild(favHead);
+    app.appendChild(grid(s.favorite, "No favorites yet — tap ♥ on any movie."));
+    const wlHead = el("div", "section-head");
+    wlHead.appendChild(el("h3", "", "Watch later"));
+    app.appendChild(wlHead);
+    app.appendChild(grid(s.watch_later, "Nothing in watch later — tap ⏱ on any movie."));
   }
 
   // ------------------------------------------------------------ dashboard
@@ -582,20 +716,61 @@
   }
 
   // ------------------------------------------------------------ init
-  async function init() {
+  function hideSuggest() {
+    const b = $("#suggest");
+    if (b) b.classList.add("hidden");
+  }
+
+  function wireSearch() {
+    const input = $("#search-input");
+    const box = $("#suggest");
     $("#search-form").addEventListener("submit", e => {
       e.preventDefault();
-      const q = $("#search-input").value.trim();
+      const q = input.value.trim();
+      hideSuggest();
+      if (!q) { location.hash = "#/browse"; return; }
+      browseState = freshBrowse();
       location.hash = "#/browse?q=" + encodeURIComponent(q);
     });
+    let timer = null;
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      const q = input.value.trim();
+      if (q.length < 2) { hideSuggest(); return; }
+      timer = setTimeout(async () => {
+        try {
+          const data = await api("/api/search/suggest?q=" + encodeURIComponent(q));
+          const genreHit = state.genres.find(g => g.name.toLowerCase().startsWith(q.toLowerCase()));
+          const rows = [];
+          if (genreHit) rows.push(`<a href="#/browse?genre=${encodeURIComponent(genreHit.name)}">
+            <span class="s-thumb" style="background:linear-gradient(160deg,${hashColor(genreHit.name.length * 7)},${hashColor(genreHit.name.length * 7)}cc 55%,#0d0f12)"></span>
+            <span class="s-title">${escapeHtml(genreHit.name)}</span>
+            <span class="s-meta">browse category</span></a>`);
+          data.items.forEach(it => {
+            rows.push(`<a href="#/movie/${it.movieId}">
+              <span class="s-thumb" style="background:${hashColor(it.movieId)}">
+                ${it.poster_url ? `<img src="${escapeHtml(it.poster_url)}" alt="" loading="lazy" onerror="this.remove()" />` : ""}</span>
+              <span class="s-title">${escapeHtml(it.title_clean || it.title)}</span>
+              <span class="s-meta">${escapeHtml((it.genre_list || []).slice(0, 2).join(" · "))} ${it.year ? "· " + it.year : ""}</span></a>`);
+          });
+          box.innerHTML = rows.join("");
+          box.classList.toggle("hidden", !rows.length);
+        } catch (e) { hideSuggest(); }
+      }, 180);
+    });
+    document.addEventListener("click", e => { if (!e.target.closest("#search-form")) hideSuggest(); });
+  }
+
+  async function init() {
+    wireSearch();
     try {
       state.genres = (await api("/api/genres")).genres;
     } catch (e) { /* backend not ready */ }
     const strip = $("#genre-strip");
     state.genres.slice(0, 18).forEach(g => {
       const a = document.createElement("a");
-      a.href = "#/browse?genre=" + encodeURIComponent(g);
-      a.textContent = g;
+      a.href = "#/browse?genre=" + encodeURIComponent(g.name);
+      a.textContent = g.name;
       strip.appendChild(a);
     });
     $("#modal-backdrop").addEventListener("click", e => { if (e.target.id === "modal-backdrop") closeModal(); });

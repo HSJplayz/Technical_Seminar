@@ -38,9 +38,15 @@ $env:ML32M_DIR = "D:\seminar\ml-32m"
 
 ## Features
 
-- **Catalog** — search, genre / year filters, sorting, pagination over 86k titles.
+- **Catalog** — search (live suggestions + FTS5 on title & genre), genre / year filters, sorting,
+  pagination over 86k titles. Category cards on the home page.
+- **Posters** — hybrid: real TMDB artwork when fetched (see below), otherwise auto-generated gradient
+  posters, cached on demand.
 - **Movie detail** — rating aggregates, community tags, "customers also viewed", star rating widget.
 - **Accounts** — register / login (PBKDF2), per-user ratings stored locally.
+- **Basket** — **Favorites** and **Watch later** lists, persistent per account (survive logout), on every
+  card + detail page, with a My Basket page. The `user_lists` data source is FL-ready: it becomes an
+  implicit training signal in the federated pipeline.
 - **Recommendations** — popularity baseline + user-user collaborative filtering; seamlessly upgraded to the
   **federated model** once you train it on the dashboard.
 - **Privacy & FL dashboard**:
@@ -49,16 +55,28 @@ $env:ML32M_DIR = "D:\seminar\ml-32m"
   - `Privacy` — ε vs accuracy chart and the privacy-accounting argument (SecAgg amplification ≈ ε/√K).
   - `SHAP` — global feature-importance bars from the exact linear SHAP of the global model.
 
+## Posters (hybrid)
+
+Generated gradient posters work with zero setup. For real TMDB artwork, set a free API key and fetch the
+popular titles (re-run to resume / fetch more):
+
+```powershell
+$env:TMDB_KEY = "your_key"
+.venv\Scripts\python.exe backend\fetch_posters.py --limit 20000
+```
+
 ## Architecture
 
 ```
 frontend/                  # static SPA (served by FastAPI)
 backend/
   main.py                  # FastAPI app + all REST routes
-  import_data.py           # streaming MovieLens 32M importer
+  import_data.py           # streaming MovieLens 32M importer (incl. links.csv)
   database.py              # SQLite schema + helpers
   auth.py                  # PBKDF2 + HMAC tokens
-  recommend.py             # catalog search + HybridEngine (pluggable model seam)
+  recommend.py             # catalog search (FTS5) + HybridEngine + basket lists
+  posters.py               # hybrid poster generation / TMDB resolution
+  fetch_posters.py         # optional TMDB poster-path fetcher (needs TMDB_KEY)
   fl_trainer.py            # FedAvg + Local DP + SecAgg + CKKS + SHAP
   config.py                # paths (ML32M_DIR env var) + secrets
 ```

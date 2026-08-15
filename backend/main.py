@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import database
+import posters
 import recommend
 from auth import create_token, hash_password, verify_password, verify_token
 import fl_trainer
@@ -117,6 +118,20 @@ def genres():
     return {"genres": recommend.get_genres()}
 
 
+@app.get("/api/search/suggest")
+def search_suggest(q: str = ""):
+    return {"items": recommend.search_suggest(q)}
+
+
+@app.get("/api/poster/{movie_id}.png")
+def movie_poster(movie_id: int):
+    try:
+        posters.ensure_poster_file(movie_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Movie not found")
+    return FileResponse(posters.POSTER_DIR / f"{movie_id}.png", media_type="image/png")
+
+
 @app.get("/api/movies")
 def movies(q: str = "", genre: str = "", sort: str = "relevance",
            year_min: int = 0, year_max: int = 0, page: int = 1, per_page: int = 24):
@@ -141,6 +156,7 @@ def movie(movie_id: int, authorization: str | None = Header(default=None)):
     uid = _current_user(authorization)
     detail["similar"] = recommend.similar_movies(movie_id)
     detail["my_rating"] = None
+    detail["lists"] = {t: False for t in recommend.LIST_TYPES}
     if uid is not None:
         with database.cursor() as (cur, _):
             row = cur.execute(
@@ -148,6 +164,7 @@ def movie(movie_id: int, authorization: str | None = Header(default=None)):
                 (uid, movie_id),
             ).fetchone()
         detail["my_rating"] = row["rating"] if row else None
+        detail["lists"] = recommend.list_status(uid, movie_id)
     return detail
 
 
@@ -184,6 +201,48 @@ def rate(body: RateBody, authorization: str | None = Header(default=None)):
     if recommend.get_movie(body.movieId) is None:
         raise HTTPException(status_code=404, detail="Movie not found")
     recommend.rate_movie(uid, body.movieId, body.rating)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- basket routes
+
+@app.get("/api/lists/summary")
+def lists_summary(authorization: str | None = Header(default=None)):
+    uid = _require_user(_current_user(authorization))
+    return {
+        "counts": recommend.list_counts(uid),
+        "favorite": recommend.get_user_list(uid, "favorite"),
+        "watch_later": recommend.get_user_list(uid, "watch_later"),
+    }
+
+
+@app.get("/api/list/{list_type}")
+def get_list(list_type: str, authorization: str | None = Header(default=None)):
+    uid = _require_user(_current_user(authorization))
+    try:
+        items = recommend.get_user_list(uid, list_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Unknown list type")
+    return {"items": items}
+
+
+@app.put("/api/list/{list_type}/{movie_id}")
+def add_to_list(list_type: str, movie_id: int, authorization: str | None = Header(default=None)):
+    uid = _require_user(_current_user(authorization))
+    if list_type not in recommend.LIST_TYPES:
+        raise HTTPException(status_code=400, detail="Unknown list type")
+    if recommend.get_movie(movie_id) is None:
+        raise HTTPException(status_code=404, detail="Movie not found")
+    recommend.add_to_list(uid, movie_id, list_type)
+    return {"ok": True}
+
+
+@app.delete("/api/list/{list_type}/{movie_id}")
+def remove_from_list(list_type: str, movie_id: int, authorization: str | None = Header(default=None)):
+    uid = _require_user(_current_user(authorization))
+    if list_type not in recommend.LIST_TYPES:
+        raise HTTPException(status_code=400, detail="Unknown list type")
+    recommend.remove_from_list(uid, movie_id, list_type)
     return {"ok": True}
 
 

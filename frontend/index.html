@@ -16,9 +16,11 @@
       <form class="searchbox" id="search-form">
         <input id="search-input" type="text" placeholder="Search movies, genres, titles…" autocomplete="off" />
         <button type="submit" aria-label="Search">&#128269;</button>
+        <div class="suggest hidden" id="suggest"></div>
       </form>
       <nav class="topnav">
         <a href="#/browse">Browse</a>
+        <a href="#/basket">My Basket<span id="basket-count"></span></a>
         <a href="#/dashboard">Privacy&nbsp;Dashboard</a>
       </nav>
       <div class="account" id="account-box"></div>

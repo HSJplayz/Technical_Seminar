@@ -8,6 +8,7 @@ served by whatever model the research pipeline produces.
 """
 import numpy as np
 
+import posters
 from database import cursor
 
 
@@ -15,15 +16,20 @@ def movie_year_expr() -> str:
     return "CAST(substr(title, instr(title, '(') + 1, 4) AS INTEGER)"
 
 
+def _decorate(m: dict) -> dict:
+    m["year"] = _parse_year(m["title"])
+    m["genre_list"] = m["genres"].split("|")
+    m["title_clean"] = _strip_year(m["title"])
+    m["poster_url"] = posters.poster_url(m["movieId"])
+    return m
+
+
 def get_movie(movie_id: int) -> dict | None:
     with cursor() as (cur, _):
         row = cur.execute("SELECT movieId, title, genres FROM movies WHERE movieId = ?", (movie_id,)).fetchone()
         if row is None:
             return None
-        m = dict(row)
-        m["year"] = _parse_year(m["title"])
-        m["genre_list"] = m["genres"].split("|")
-        return m
+        return _decorate(dict(row))
 
 
 def _parse_year(title: str) -> int | None:
@@ -35,13 +41,51 @@ def _parse_year(title: str) -> int | None:
     return None
 
 
-def get_genres() -> list[str]:
+def get_genres() -> list[dict]:
     with cursor() as (cur, _):
-        rows = cur.execute("SELECT DISTINCT genres FROM movies").fetchall()
-    genres: set[str] = set()
+        rows = cur.execute("SELECT genres FROM movies").fetchall()
+    counts: dict[str, int] = {}
     for r in rows:
-        genres.update(r["genres"].split("|"))
-    return sorted(g for g in genres if g and g != "(no genres listed)")
+        for g in r["genres"].split("|"):
+            if g and g != "(no genres listed)":
+                counts[g] = counts.get(g, 0) + 1
+    return [{"name": g, "count": counts[g]} for g in sorted(counts)]
+
+
+def _fts_init() -> None:
+    with cursor() as (cur, conn):
+        cur.execute("CREATE TABLE IF NOT EXISTS fts_meta (k TEXT PRIMARY KEY, v TEXT)")
+        if cur.execute("SELECT 1 FROM fts_meta WHERE k = 'movies_fts'").fetchone():
+            return
+        cur.execute("DROP TABLE IF EXISTS movies_fts")
+        cur.execute("CREATE VIRTUAL TABLE movies_fts USING fts5(title, genres, content='')")
+        cur.execute(
+            """INSERT INTO movies_fts (rowid, title, genres)
+               SELECT movieId, title, genres FROM movies"""
+        )
+        cur.execute("INSERT INTO fts_meta (k, v) VALUES ('movies_fts', '1')")
+        conn.commit()
+
+
+def search_suggest(query: str, limit: int = 8) -> list[dict]:
+    q = (query or "").strip().lower()
+    if len(q) < 2:
+        return []
+    _fts_init()
+    term = " ".join(w + "*" for w in q.split())
+    with cursor() as (cur, _):
+        try:
+            rows = cur.execute(
+                f"""SELECT movieId, title, genres FROM movies_fts
+                    WHERE movies_fts MATCH ? ORDER BY bm25(movies_fts) LIMIT ?""",
+                (term, limit),
+            ).fetchall()
+        except Exception:
+            rows = cur.execute(
+                "SELECT movieId, title, genres FROM movies WHERE LOWER(title) LIKE ? LIMIT ?",
+                (f"%{q}%", limit),
+            ).fetchall()
+    return [_decorate(dict(r)) for r in rows]
 
 
 def search_movies(query: str = "", genres: list[str] | None = None,
@@ -50,12 +94,12 @@ def search_movies(query: str = "", genres: list[str] | None = None,
     sql = "SELECT movieId, title, genres FROM movies"
     conds, params = [], []
     if query:
-        conds.append("LOWER(title) LIKE ?")
-        params.append(f"%{query.lower()}%")
+        conds.append("(LOWER(title) LIKE ? OR LOWER(genres) LIKE ?)")
+        params += [f"%{query.lower()}%", f"%{query.lower()}%"]
     if genres:
-        placeholders = ",".join("?" for _ in genres)
-        conds.append(f"genres IN ({placeholders})")
-        params.extend(genres)
+        like_conds = " OR ".join(["genres LIKE ?"] * len(genres))
+        conds.append(f"({like_conds})")
+        params += [f"%{g}%" for g in genres]
     if year_min is not None:
         conds.append(f"{movie_year_expr()} >= ?")
         params.append(year_min)
@@ -72,19 +116,14 @@ def search_movies(query: str = "", genres: list[str] | None = None,
         order = {
             "relevance": "title ASC",
             "year": f"{movie_year_expr()} DESC, title ASC",
+            "rating": "(SELECT p.score FROM popularity p WHERE p.movieId = movies.movieId) DESC, title ASC",
             "title": "title ASC",
         }.get(sort, "title ASC")
         sql += " ORDER BY " + order + " LIMIT ? OFFSET ?"
         params += [per_page, (page - 1) * per_page]
         rows = cur.execute(sql, params).fetchall()
 
-    movies = []
-    for r in rows:
-        m = dict(r)
-        m["year"] = _parse_year(m["title"])
-        m["genre_list"] = m["genres"].split("|")
-        m["title_clean"] = _strip_year(m["title"])
-        movies.append(m)
+    movies = [_decorate(dict(r)) for r in rows]
     return {"items": movies, "total": total, "page": page, "per_page": per_page,
             "pages": max(1, -(-total // per_page))}
 
@@ -102,14 +141,7 @@ def popular_movies(limit: int = 24) -> list[dict]:
                WHERE p.cnt >= 50 ORDER BY p.score DESC LIMIT ?""",
             (limit,),
         ).fetchall()
-    out = []
-    for r in rows:
-        m = dict(r)
-        m["year"] = _parse_year(m["title"])
-        m["genre_list"] = m["genres"].split("|")
-        m["title_clean"] = _strip_year(m["title"])
-        out.append(m)
-    return out
+    return [_decorate(dict(r)) for r in rows]
 
 
 def movie_detail(movie_id: int) -> dict | None:
@@ -173,11 +205,7 @@ def similar_movies(movie_id: int, limit: int = 10) -> list[dict]:
             ranked[d["movieId"]] = d
     out = []
     for mid in sorted(ranked, key=lambda k: (ranked[k].get("shared", 0) or 0, ranked[k].get("overlap", 0)), reverse=True)[:limit]:
-        d = ranked[mid]
-        d["title_clean"] = _strip_year(d["title"])
-        d["year"] = _parse_year(d["title"])
-        d["genre_list"] = d["genres"].split("|")
-        out.append(d)
+        out.append(_decorate(ranked[mid]))
     return out
 
 
@@ -203,6 +231,61 @@ def rate_movie(user_id: int, movie_id: int, rating: float) -> None:
 
 def _in_chunks(values: list[int], chunk: int = 500) -> list[list[int]]:
     return [values[i:i + chunk] for i in range(0, len(values), chunk)]
+
+
+# ---------------------------------------------------------------- basket lists
+
+LIST_TYPES = ("favorite", "watch_later")
+
+
+def add_to_list(user_id: int, movie_id: int, list_type: str) -> None:
+    if list_type not in LIST_TYPES:
+        raise ValueError(f"unknown list type: {list_type}")
+    with cursor() as (cur, _):
+        cur.execute(
+            "INSERT OR IGNORE INTO user_lists (user_id, movieId, list_type) VALUES (?,?,?)",
+            (user_id, movie_id, list_type),
+        )
+
+
+def remove_from_list(user_id: int, movie_id: int, list_type: str) -> None:
+    with cursor() as (cur, _):
+        cur.execute(
+            "DELETE FROM user_lists WHERE user_id = ? AND movieId = ? AND list_type = ?",
+            (user_id, movie_id, list_type),
+        )
+
+
+def get_user_list(user_id: int, list_type: str) -> list[dict]:
+    if list_type not in LIST_TYPES:
+        raise ValueError(f"unknown list type: {list_type}")
+    with cursor() as (cur, _):
+        rows = cur.execute(
+            """SELECT l.movieId, l.created_at, m.title, m.genres
+               FROM user_lists l JOIN movies m ON m.movieId = l.movieId
+               WHERE l.user_id = ? AND l.list_type = ?
+               ORDER BY l.created_at DESC""",
+            (user_id, list_type),
+        ).fetchall()
+    return [_decorate(dict(r)) for r in rows]
+
+
+def list_status(user_id: int, movie_id: int) -> dict[str, bool]:
+    with cursor() as (cur, _):
+        rows = cur.execute(
+            "SELECT list_type FROM user_lists WHERE user_id = ? AND movieId = ?",
+            (user_id, movie_id),
+        ).fetchall()
+    return {t: False for t in LIST_TYPES} | {r["list_type"]: True for r in rows}
+
+
+def list_counts(user_id: int) -> dict[str, int]:
+    with cursor() as (cur, _):
+        rows = cur.execute(
+            "SELECT list_type, COUNT(*) AS n FROM user_lists WHERE user_id = ? GROUP BY list_type",
+            (user_id,),
+        ).fetchall()
+    return {t: 0 for t in LIST_TYPES} | {r["list_type"]: r["n"] for r in rows}
 
 
 def user_cf_recommendations(user_id: int, limit: int = 24) -> list[dict]:
@@ -286,10 +369,7 @@ def user_cf_recommendations(user_id: int, limit: int = 24) -> list[dict]:
             continue
         d = dict(r)
         d["score"] = round(float(score), 3)
-        d["title_clean"] = _strip_year(d["title"])
-        d["year"] = _parse_year(d["title"])
-        d["genre_list"] = d["genres"].split("|")
-        out.append(d)
+        out.append(_decorate(d))
     return out
 
 

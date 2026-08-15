@@ -39,12 +39,29 @@ CREATE TABLE IF NOT EXISTS user_ratings (
     PRIMARY KEY (user_id, movieId)
 );
 
+CREATE TABLE IF NOT EXISTS movie_links (
+    movieId INTEGER PRIMARY KEY,
+    imdbId TEXT,
+    tmdbId TEXT,
+    poster_path TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_lists (
+    user_id INTEGER NOT NULL,
+    movieId INTEGER NOT NULL,
+    list_type TEXT NOT NULL CHECK (list_type IN ('favorite', 'watch_later')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, movieId, list_type)
+);
+
 CREATE INDEX IF NOT EXISTS idx_ratings_user ON ratings(userId);
 CREATE INDEX IF NOT EXISTS idx_ratings_movie ON ratings(movieId);
 CREATE INDEX IF NOT EXISTS idx_ratings_um ON ratings(userId, movieId);
 CREATE INDEX IF NOT EXISTS idx_ratings_mr ON ratings(movieId, rating);
 CREATE INDEX IF NOT EXISTS idx_tags_movie ON tags(movieId);
 CREATE INDEX IF NOT EXISTS idx_user_ratings ON user_ratings(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_lists_user ON user_lists(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_lists_um ON user_lists(user_id, list_type);
 CREATE INDEX IF NOT EXISTS idx_movies_lower ON movies(LOWER(title));
 """
 

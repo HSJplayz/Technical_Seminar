@@ -442,6 +442,8 @@ class FederatedRecModel:
             d["title_clean"] = str(d["title"]).rstrip().rsplit("(", 1)[0].strip()
             d["year"] = None
             d["genre_list"] = d["genres"].split("|")
+            from posters import poster_url
+            d["poster_url"] = poster_url(int(mid))
             out.append(d)
             if len(out) >= n:
                 break

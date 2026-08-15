@@ -13,7 +13,7 @@ import random
 import sys
 import time
 
-from config import MOVIES_CSV, RATINGS_CSV, TAGS_CSV
+from config import MOVIES_CSV, RATINGS_CSV, TAGS_CSV, LINKS_CSV
 from database import init_db, get_conn
 
 CHUNK = 100_000
@@ -118,6 +118,28 @@ def build_popularity_cache(conn):
     print(f"[popularity] built in {time.time() - start:.1f}s", flush=True)
 
 
+def import_links(conn):
+    start = _timed("links")
+    conn.execute("DELETE FROM movie_links")
+    cur = conn.cursor()
+    rows = []
+    with open(LINKS_CSV, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        next(reader, None)
+        for r in reader:
+            try:
+                rows.append((int(r[0]), r[1] if len(r) > 1 else None, r[2] if len(r) > 2 else None, None))
+            except (ValueError, IndexError):
+                continue
+            if len(rows) >= CHUNK:
+                cur.executemany("INSERT OR REPLACE INTO movie_links VALUES (?,?,?,?)", rows)
+                rows.clear()
+    if rows:
+        cur.executemany("INSERT OR REPLACE INTO movie_links VALUES (?,?,?,?)", rows)
+    conn.commit()
+    print(f"[links] done in {time.time() - start:.1f}s -> {conn.total_changes} rows", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ratio", type=float, default=1.0,
@@ -135,6 +157,7 @@ def main():
     try:
         import_movies(conn)
         import_tags(conn)
+        import_links(conn)
         if not args.skip_ratings:
             import_ratings(conn, ratio)
         build_popularity_cache(conn)
