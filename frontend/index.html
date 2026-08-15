@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MovieStore · Privacy-First Movie Storefront</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="#/" class="brand" id="brand">
+        <span class="brand-logo">&#128253;</span>
+        <span class="brand-name">Movie<em>Store</em></span>
+      </a>
+      <form class="searchbox" id="search-form">
+        <input id="search-input" type="text" placeholder="Search movies, genres, titles…" autocomplete="off" />
+        <button type="submit" aria-label="Search">&#128269;</button>
+      </form>
+      <nav class="topnav">
+        <a href="#/browse">Browse</a>
+        <a href="#/dashboard">Privacy&nbsp;Dashboard</a>
+      </nav>
+      <div class="account" id="account-box"></div>
+    </div>
+  </header>
+
+  <div class="genre-strip" id="genre-strip"></div>
+
+  <main id="app"></main>
+
+  <footer class="footer">
+    <p>MovieStore — demo built on the <b>MovieLens 32M</b> dataset.</p>
+    <p>Federated Learning research stack: Local DP · SecAgg · CKKS (tenseal) · SHAP XAI.</p>
+  </footer>
+
+  <div class="modal-backdrop hidden" id="modal-backdrop">
+    <div class="modal" id="modal"></div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="/static/js/charts.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

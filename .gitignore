@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local database (large, recreated by import_data.py)
+data/*.db
+data/*.log
+data/*.err.log
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
