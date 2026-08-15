@@ -404,6 +404,7 @@
           <div class="rate-widget">
             <span style="font-size:13px;color:#565959">${state.user ? "Your rating:" : "Sign in to rate:"}</span>
             <div class="rate-stars" id="rate-stars"></div>
+            <span id="rate-value" class="rate-value" style="display:none"></span>
             ${state.user ? `<button class="btn-ghost" id="btn-clear-rate" ${d.my_rating ? "" : "style='display:none'"}>Clear</button>` : ""}
           </div>
           <div class="detail-actions" id="detail-actions" style="display:flex;gap:10px;margin-top:16px"></div>
@@ -458,18 +459,31 @@
     for (let v = 1; v <= 5; v++) {
       const b = el("button", current >= v ? "on" : "");
       b.textContent = "★";
+      b.title = `${v} star${v > 1 ? "s" : ""}`;
       b.addEventListener("click", () => onRate(v));
       box.appendChild(b);
     }
+    const val = $("#rate-value");
+    if (val) {
+      if (current) {
+        val.style.display = "";
+        val.textContent = `${Number(current).toFixed(1)} / 5`;
+      } else {
+        val.style.display = "none";
+      }
+    }
     const clear = $("#btn-clear-rate");
-    if (clear) clear.addEventListener("click", async () => {
-      const id = +location.hash.split("/")[2];
-      try {
-        await api(`/api/rate/${id}`, { method: "DELETE" });
-        toast("Rating removed");
-        location.hash = `#/movie/${id}`;
-      } catch (e) { toast(e.message); }
-    });
+    if (clear) {
+      clear.style.display = current ? "" : "none";
+      clear.addEventListener("click", async () => {
+        const id = +location.hash.split("/")[2];
+        try {
+          await api(`/api/rate/${id}`, { method: "DELETE" });
+          toast("Rating removed");
+          location.hash = `#/movie/${id}`;
+        } catch (e) { toast(e.message); }
+      });
+    }
   }
 
   // ------------------------------------------------------------ basket

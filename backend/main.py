@@ -31,6 +31,19 @@ app = FastAPI(title="MovieStore · Privacy-First Movie Storefront", lifespan=lif
 app.mount("/static", StaticFiles(directory=str(FRONTEND)), name="static")
 
 
+@app.middleware("http")
+async def no_stale_cache(request, call_next):
+    """Let browsers always revalidate the SPA + posters so stale JS/CSS/pngs
+    never linger after a deploy."""
+    resp = await call_next(request)
+    path = request.url.path
+    if path.startswith("/api/poster/") or path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    elif path == "/":
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 # ---------------------------------------------------------------- auth utils
 
 def _current_user(authorization: str | None = Header(default=None)) -> int | None:

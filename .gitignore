@@ -16,3 +16,6 @@ Thumbs.db
 
 # Regenerated assets
 frontend/static/posters/
+
+# Local secrets (TMDB key, app secret)
+.env

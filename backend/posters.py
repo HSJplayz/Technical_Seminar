@@ -151,7 +151,7 @@ def get_poster_path(movie_id: int) -> str | None:
 def poster_url(movie_id: int) -> str:
     pp = get_poster_path(movie_id)
     if pp:
-        return f"{TMDB_IMG}/{pp}"
+        return f"{TMDB_IMG}{pp}"
     return f"/api/poster/{movie_id}.png"
 
 

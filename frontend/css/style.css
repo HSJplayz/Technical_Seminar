@@ -137,6 +137,8 @@ main { max-width: 1500px; margin: 0 auto; padding: 20px 22px 60px; }
   background: none; border: 0; font-size: 26px; color: #ccc; cursor: pointer; padding: 2px;
 }
 .rate-stars button.on { color: var(--star); }
+
+.rate-value { font-size: 13px; font-weight: 700; color: var(--star); white-space: nowrap; }
 .similar-section { margin-top: 30px; }
 
 /* ---------- filter bar ---------- */

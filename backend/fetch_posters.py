@@ -26,7 +26,7 @@ BASE = "https://api.themoviedb.org/3/movie/{tmdb_id}"
 class RateLimiter:
     """Token bucket throttled to the TMDB free tier (~45 requests / 10 s)."""
 
-    def __init__(self, rate: float = 4.5, burst: int = 40):
+    def __init__(self, rate: float = 10.0, burst: int = 40):
         self.rate = rate
         self.burst = burst
         self.tokens = float(burst)
@@ -67,6 +67,10 @@ def fetch_one(r, session, limiter):
         limiter.acquire()
         resp = session.get(BASE.format(tmdb_id=int(tmdb)),
                            params={"api_key": TMDB_API_KEY}, timeout=20)
+        if resp.status_code == 429:
+            limiter.rate = max(1.0, limiter.rate * 0.6)
+            time.sleep(2)
+            return mid, "err:429"
         if resp.status_code == 404:
             _mark(mid, "none")
             return mid, "none"
