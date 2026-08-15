@@ -229,6 +229,14 @@ def rate_movie(user_id: int, movie_id: int, rating: float) -> None:
         )
 
 
+def remove_rating(user_id: int, movie_id: int) -> None:
+    with cursor() as (cur, _):
+        cur.execute(
+            "DELETE FROM user_ratings WHERE user_id = ? AND movieId = ?",
+            (user_id, movie_id),
+        )
+
+
 def _in_chunks(values: list[int], chunk: int = 500) -> list[list[int]]:
     return [values[i:i + chunk] for i in range(0, len(values), chunk)]
 

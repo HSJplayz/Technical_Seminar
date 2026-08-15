@@ -180,18 +180,21 @@ def recommendations(authorization: str | None = Header(default=None), limit: int
 def my_ratings(authorization: str | None = Header(default=None)):
     uid = _require_user(_current_user(authorization))
     rated = recommend.get_user_ratings(uid)
-    titles: dict[int, str] = {}
+    titles: dict[int, dict] = {}
     if rated:
         for chunk in recommend._in_chunks([r["movieId"] for r in rated]):
             with database.cursor() as (cur, _):
                 rows = cur.execute(
-                    f"SELECT movieId, title FROM movies WHERE movieId IN ({','.join('?' for _ in chunk)})",
+                    f"SELECT movieId, title, genres FROM movies WHERE movieId IN ({','.join('?' for _ in chunk)})",
                     chunk,
                 ).fetchall()
-            titles.update({r["movieId"]: r["title"] for r in rows})
+            titles.update({r["movieId"]: dict(r) for r in rows})
     out = []
     for r in rated:
-        out.append({**r, "title": titles.get(r["movieId"], "Unknown")})
+        m = titles.get(r["movieId"])
+        if not m:
+            continue
+        out.append({**r, **recommend._decorate(m)})
     return {"items": out}
 
 
@@ -201,6 +204,13 @@ def rate(body: RateBody, authorization: str | None = Header(default=None)):
     if recommend.get_movie(body.movieId) is None:
         raise HTTPException(status_code=404, detail="Movie not found")
     recommend.rate_movie(uid, body.movieId, body.rating)
+    return {"ok": True}
+
+
+@app.delete("/api/rate/{movie_id}")
+def unrate(movie_id: int, authorization: str | None = Header(default=None)):
+    uid = _require_user(_current_user(authorization))
+    recommend.remove_rating(uid, movie_id)
     return {"ok": True}
 
 

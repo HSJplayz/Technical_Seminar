@@ -248,6 +248,7 @@
     browse: browseView,
     movie: movieView,
     basket: basketView,
+    ratings: ratingsView,
     dashboard: dashboardView,
   };
 
@@ -462,8 +463,12 @@
     }
     const clear = $("#btn-clear-rate");
     if (clear) clear.addEventListener("click", async () => {
-      await api("/api/rate", { method: "POST", body: JSON.stringify({ movieId: +location.hash.split("/")[2], rating: 0.5 }) });
-      location.hash = `#/movie/${location.hash.split("/")[2]}`;
+      const id = +location.hash.split("/")[2];
+      try {
+        await api(`/api/rate/${id}`, { method: "DELETE" });
+        toast("Rating removed");
+        location.hash = `#/movie/${id}`;
+      } catch (e) { toast(e.message); }
     });
   }
 
@@ -498,6 +503,57 @@
     wlHead.appendChild(el("h3", "", "Watch later"));
     app.appendChild(wlHead);
     app.appendChild(grid(s.watch_later, "Nothing in watch later — tap ⏱ on any movie."));
+  }
+
+  // ------------------------------------------------------------ ratings
+  async function ratingsView(app) {
+    if (!state.user) {
+      app.innerHTML = `<div class="panel" style="max-width:520px;margin:40px auto;text-align:center">
+        <h3>My ratings</h3>
+        <p>Sign in to see every movie you've rated, change your stars, or remove a rating.
+        Your ratings are your private data — they only reach the server as federated updates.</p>
+        <div style="display:flex;gap:10px;justify-content:center">
+          <button class="btn-primary" id="rt-login">Sign in</button>
+          <button class="btn-ghost" id="rt-reg">Register</button>
+        </div></div>`;
+      $("#rt-login").addEventListener("click", () => openAuthModal("login"));
+      $("#rt-reg").addEventListener("click", () => openAuthModal("register"));
+      return;
+    }
+    app.innerHTML = `<div class="spinner"></div>`;
+    const r = await api("/api/my-ratings");
+    app.innerHTML = "";
+    const head = el("div", "basket-head");
+    head.appendChild(el("h2", "section-title", "My Ratings"));
+    head.appendChild(el("span", "pill gray", `${r.items.length} rated`));
+    app.appendChild(head);
+    if (!r.items.length) {
+      app.appendChild(el("div", "empty", "You haven't rated anything yet — open any movie and tap the stars."));
+      return;
+    }
+    const g = el("div", "grid");
+    r.items.forEach(m => g.appendChild(ratedCard(m, app)));
+    app.appendChild(g);
+  }
+
+  function ratedCard(m, app) {
+    const card = movieCard(m);
+    const body = card.querySelector(".card-body");
+    const bar = el("div", "your-rating",
+      `Your rating: ${stars(m.rating)} <b>${m.rating}</b>`);
+    body.insertBefore(bar, body.firstChild);
+    const actions = card.querySelector(".card-actions");
+    const rm = el("button", "buy-btn outline", "Remove rating");
+    rm.addEventListener("click", async e => {
+      e.stopPropagation();
+      try {
+        await api(`/api/rate/${m.movieId}`, { method: "DELETE" });
+        toast("Rating removed");
+        await ratingsView(app);
+      } catch (err) { toast(err.message); }
+    });
+    actions.insertBefore(rm, actions.firstChild);
+    return card;
   }
 
   // ------------------------------------------------------------ dashboard

@@ -145,7 +145,7 @@ def _lerp_hsl(top: str, bot: str, t: float):
 def get_poster_path(movie_id: int) -> str | None:
     with cursor() as (cur, _):
         row = cur.execute("SELECT poster_path FROM movie_links WHERE movieId = ?", (movie_id,)).fetchone()
-    return row["poster_path"] if row and row["poster_path"] else None
+    return row["poster_path"] if row and row["poster_path"] and row["poster_path"] != "none" else None
 
 
 def poster_url(movie_id: int) -> str:
