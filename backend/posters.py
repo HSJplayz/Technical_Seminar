@@ -49,49 +49,77 @@ def generate_poster(movie_id: int, title: str, genres: list[str], out_path: Path
     img = Image.new("RGB", (w, hgt))
     d = ImageDraw.Draw(img)
 
-    top = f"hsl({hue}, {sat}%, {light}%)"
-    h2 = (hue + 38) % 360
-    bot = f"hsl({h2}, {sat}%, 8%)"
-    _gradient(img, d, top, bot)
+    h2 = (hue + 32) % 360
+    _gradient(img, d, f"hsl({hue}, {sat}%, {light}%)", f"hsl({h2}, 62%, 9%)")
 
-    for _ in range(28):
-        x = (movie_id * 7919 + _ * 104729) % w
-        y = (movie_id * 104729 + _ * 7919) % hgt
-        a = (hash_color(movie_id + _)[0]) / 360.0
-        d.ellipse([x, y, x + 34 + (movie_id + _) % 46, y + 34 + (movie_id + _) % 46],
-                  fill=f"hsl({int(a * 360)}, 70%, 55%)", outline=None)
+    # subtle center light band for depth
+    for y in range(int(hgt * 0.28), int(hgt * 0.34)):
+        a = int(26 * (1 - abs(y - hgt * 0.31) / (hgt * 0.03)))
+        d.line([(0, y), (w, y)], fill=(255, 255, 255, max(0, a)))
 
-    d.rectangle([0, 0, w, 8], fill="#ff9900")
-    d.rectangle([0, hgt - 42, w, hgt], fill=(13, 15, 18))
+    d.rectangle([0, 0, w, 10], fill="#ff9900")
+    d.rectangle([0, hgt - 46, w, hgt], fill=(13, 15, 18))
 
-    d.text((16, hgt - 34), "MovieStore", font=_font(16), fill="#ff9900")
-    d.text((16, hgt - 18), "STREAM · FAVORITE · WATCH LATER", font=_font(10), fill=(150, 152, 155))
+    d.text((16, hgt - 38), "MovieStore", font=_font(17), fill="#ff9900")
+    d.text((16, hgt - 20), "MOVIELENS 32M", font=_font(11), fill=(150, 152, 155))
 
-    title_clean = title.rsplit("(", 1)[0].strip() if title.endswith(")") and "(" in title else title
-    d.text((16, 22), _wrap(title_clean, _font(34), w - 32), font=_font(34),
-           fill=(255, 255, 255))
+    title_clean = _strip_parens(title)
+    big = _font(38)
+    title_lines = _wrap_lines(title_clean, big, w - 48, max_lines=3)
+    lh = int(big.getbbox("Ag")[3] * 1.18)
+    block_h = lh * len(title_lines)
+    start_y = max(120, int(hgt * 0.30))
+    ty = start_y
+    for line in title_lines:
+        tw = big.getbbox(line)[2]
+        tx = (w - tw) // 2
+        d.text((tx + 2, ty + 3), line, font=big, fill=(0, 0, 0))
+        d.text((tx, ty), line, font=big, fill=(255, 255, 255))
+        ty += lh
+
     genre_line = ", ".join(genres[:3]) if genres else ""
     if genre_line:
-        d.text((16, hgt - 96), genre_line, font=_font(16), fill=(210, 210, 212))
+        sm = _font(15)
+        gw = sm.getbbox(genre_line)[2]
+        d.text(((w - gw) // 2, start_y + block_h + 12), genre_line, font=sm, fill=(240, 240, 240))
+
+    year = _extract_year(title)
+    if year:
+        ym = _font(20)
+        yw = ym.getbbox(year)[2]
+        d.text(((w - yw) // 2, start_y + block_h + 40), year, font=ym, fill="#ff9900")
 
     img.save(out_path, "PNG")
     return out_path
 
 
-def _wrap(text: str, font, max_w: int, max_lines: int = 4) -> str:
+def _strip_parens(title: str) -> str:
+    return title.rsplit("(", 1)[0].strip() if title.endswith(")") and "(" in title else title
+
+
+def _extract_year(title: str) -> str | None:
+    if "(" in title and title.rstrip().endswith(")"):
+        seg = title[title.rfind("(") + 1:title.rfind(")")]
+        if seg.isdigit():
+            return seg
+    return None
+
+
+def _wrap_lines(text: str, font, max_w: int, max_lines: int = 3) -> list[str]:
     lines, cur = [], ""
     for word in text.split():
         trial = (cur + " " + word).strip()
         if font.getbbox(trial)[2] <= max_w:
             cur = trial
         else:
-            lines.append(cur)
+            if cur:
+                lines.append(cur)
             cur = word
     if cur:
         lines.append(cur)
     if len(lines) > max_lines:
-        return " ".join(lines[:max_lines]).rstrip() + "…"
-    return "\n".join(lines)
+        return [" ".join(lines[:max_lines]).rstrip() + "…"]
+    return lines
 
 
 def _gradient(img: Image.Image, d: ImageDraw.ImageDraw, top: str, bot: str):

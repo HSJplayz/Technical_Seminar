@@ -254,16 +254,20 @@
   async function render() {
     renderAccount();
     const raw = location.hash.replace(/^#\//, "") || "home";
-    const [name, ...rest] = raw.split("/");
+    const [name] = raw.split("?")[0].split("/");
     const app = $("#app");
     app.innerHTML = `<div class="spinner"></div>`;
     try {
       const view = routes[name] || homeView;
-      await view(app, name, rest);
+      await view(app, name, restOf(raw));
     } catch (e) {
       console.error(e);
       app.innerHTML = `<div class="empty">Something went wrong: ${escapeHtml(e.message)}</div>`;
     }
+  }
+
+  function restOf(raw) {
+    return raw.split("?")[0].split("/").slice(1);
   }
 
   window.addEventListener("hashchange", render);
