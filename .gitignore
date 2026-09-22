@@ -8,6 +8,9 @@ data/*.db
 data/*.log
 data/*.err.log
 
+# Federated NCF serving model (rebuilt on demand by ncf_serving.py)
+data/*.npz
+
 # OS / editor
 Thumbs.db
 .DS_Store

@@ -81,6 +81,15 @@ main { max-width: 1500px; margin: 0 auto; padding: 20px 22px 60px; }
   background: rgba(255, 255, 255, .14); border: 1px solid rgba(255,255,255,.3);
   padding: 6px 12px; border-radius: 30px; font-size: 12.5px;
 }
+.hero-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 20px 0 4px; }
+.hero-actions .btn-primary { font-size: 15px; padding: 12px 22px; }
+.hero .btn-primary:disabled { opacity: .55; cursor: default; }
+.btn-primary.ghost-light {
+  background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.45);
+}
+.btn-primary.ghost-light:hover { background: rgba(255,255,255,.24); }
+.ncf-status { font-size: 12.5px; opacity: .85; }
+.ncf-results { margin-top: 12px; }
 
 /* ---------- movie card ---------- */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }

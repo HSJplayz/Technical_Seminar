@@ -11,6 +11,7 @@
     fav: new Set(),
     wl: new Set(),
     listCounts: { favorite: 0, watch_later: 0 },
+    ncfItems: null,
   };
 
   // ------------------------------------------------------------ api helpers
@@ -275,9 +276,10 @@
 
   // ------------------------------------------------------------ home
   async function homeView(app) {
-    const [pop, rec] = await Promise.all([
+    const [pop, rec, ncf] = await Promise.all([
       api("/api/popular?limit=12"),
       api("/api/recommendations?limit=12"),
+      api("/api/ncf/status").catch(() => null),
     ]);
     const hero = el("div", "hero");
     hero.innerHTML = `
@@ -290,9 +292,16 @@
         <span class="badge">86,000+ titles</span>
         <span class="badge">ε=1 → 2.5 with privacy maintained</span>
         <span class="badge">+10–15% accuracy</span>
-      </div>`;
+      </div>
+      <div class="hero-actions">
+        <button class="btn-primary" id="btn-rec" ${readyNcf(ncf) ? "" : "disabled"}>★ Recommend with FL + NCF</button>
+        <button class="btn-primary ghost-light" id="btn-xai" ${readyNcf(ncf) ? "" : "disabled"}>⚡ Explain with SHAP (XAI)</button>
+        <span class="ncf-status mono" id="ncf-status">${ncfStatusText(ncf)}</span>
+      </div>
+      <div id="ncf-results" class="ncf-results hidden"></div>`;
     app.innerHTML = "";
     app.appendChild(hero);
+    wireNcfButtons();
     app.appendChild(el("h2", "section-title", "Shop by category <small>· genres across the catalog</small>"));
     const cats = [...state.genres].sort((a, b) => b.count - a.count).slice(0, 12);
     const cg = el("div", "cat-grid");
@@ -308,6 +317,127 @@
     app.appendChild(grid(rec.items));
     app.appendChild(el("h2", "section-title", "Trending this week <small>· most-watched titles</small>"));
     app.appendChild(grid(pop.items));
+  }
+
+  function readyNcf(ncf) {
+    return !!(ncf && ncf.status === "ready");
+  }
+
+  function ncfStatusText(ncf) {
+    if (!ncf) return "NCF backend offline";
+    const m = ncf.model ? ` · ${ncf.model.rounds} rounds / ${ncf.model.clients} clients` : "";
+    if (ncf.status === "ready") return `NCF model ready${m}`;
+    if (ncf.status === "training") return `NCF training… ${ncf.progress ? Math.round(ncf.progress * 100) : 0}%`;
+    if (ncf.status === "error") return `NCF error: ${escapeHtml(ncf.error || "")}`;
+    return "NCF idle";
+  }
+
+  function wireNcfButtons() {
+    $("#btn-rec").addEventListener("click", onNcfRecommend);
+    $("#btn-xai").addEventListener("click", onNcfXai);
+    const txt = $("#ncf-status");
+    const st = txt.textContent;
+    if (st.includes("training") || st.includes("idle")) {
+      const t = setInterval(async () => {
+        try {
+          const s = await api("/api/ncf/status");
+          txt.textContent = ncfStatusText(s);
+          if (s.status === "ready") {
+            clearInterval(t);
+            $("#btn-rec").disabled = false;
+            $("#btn-xai").disabled = false;
+          }
+        } catch { clearInterval(t); }
+      }, 1000);
+    }
+  }
+
+  async function onNcfRecommend() {
+    if (!state.token) { openAuthModal("login"); return; }
+    const box = $("#ncf-results");
+    box.classList.remove("hidden");
+    box.innerHTML = `<div class="spinner"></div>`;
+    try {
+      const res = await api("/api/ncf/recommend", { method: "POST", body: JSON.stringify({ k: 12 }) });
+      state.ncfItems = res.items;
+      renderNcfRec(box, res);
+    } catch (e) {
+      box.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+      await waitNcfReady(box);
+    }
+  }
+
+  async function onNcfXai() {
+    if (!state.token) { openAuthModal("login"); return; }
+    const box = $("#ncf-results");
+    box.classList.remove("hidden");
+    box.innerHTML = `<div class="spinner"></div>`;
+    try {
+      let items = state.ncfItems && state.ncfItems.length ? state.ncfItems.slice(0, 6) : null;
+      if (!items) {
+        const rec = await api("/api/ncf/recommend", { method: "POST", body: JSON.stringify({ k: 6 }) });
+        items = rec.items;
+      }
+      const res = await api("/api/ncf/xai", { method: "POST", body: JSON.stringify({ items: items.map(i => i.movieId) }) });
+      renderNcfXai(box, res);
+    } catch (e) {
+      box.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+      await waitNcfReady(box);
+    }
+  }
+
+  function renderNcfRec(box, res) {
+    const head = el("h2", "section-title",
+      `Recommendations — federated NCF <small>· personalized ${personalLabel(res.personalized)} · skipped movies you already rated</small>`);
+    box.innerHTML = "";
+    box.appendChild(head);
+    box.appendChild(el("p", "card-meta",
+      "Global model: FedAvg + local DP trained across MovieLens clients. Your own P vector is fit on the server from <b>your ratings</b> only — no other user's data."));
+    box.appendChild(grid(res.items || []));
+  }
+
+  async function renderNcfXai(box, res) {
+    box.innerHTML = "";
+    const head = el("h2", "section-title", "Why did the model recommend this? <small>SHAP genre attributions</small>");
+    box.appendChild(head);
+    box.appendChild(el("p", "card-meta", escapeHtml(res.note)));
+    (res.explanations || []).forEach(x => {
+      const panel = el("div", "panel");
+      const maxV = Math.max(1e-9, ...x.attributions.map(a => Math.abs(a.importance)));
+      panel.innerHTML = `
+        <h3>${escapeHtml(x.title_clean)} ${x.year ? `<small style="color:#565959;font-weight:400">(${x.year})</small>` : ""}
+          <span class="pill gray">pred ${x.score}/5</span></h3>
+        <p class="card-meta">${escapeHtml((x.genres || []).join(" · "))}</p>
+        <ul class="bar-list">${(x.attributions || []).map(a =>
+          `<li><span style="width:110px">${escapeHtml(a.feature)}</span>
+             <div class="bar"><div style="width:${Math.max(4, Math.abs(a.importance) / maxV * 100)}%;background:${a.importance >= 0 ? "#007185" : "#c40000"}"></div></div>
+             <span class="mono">${a.importance >= 0 ? "+" : ""}${a.importance}</span></li>`).join("")}
+        </ul>`;
+      box.appendChild(panel);
+    });
+    if (!res.explanations || !res.explanations.length) box.appendChild(el("div", "empty", "Nothing to explain — run Recommend first."));
+    box.appendChild(el("p", "card-meta",
+      "Each bar is the SHAP (local-surrogate) contribution of that genre to the predicted rating for <b>you</b>."));
+  }
+
+  function personalLabel(method) {
+    return { sgd_your_ratings: "from your ratings (SGD)", mean_of_your_ratings: "mean of your rated movies", cold_start: "cold-start profile" }[method] || method;
+  }
+
+  async function waitNcfReady(box) {
+    const st = await api("/api/ncf/status");
+    if (st.status === "ready") return;
+    const t = setInterval(async () => {
+      try {
+        const s2 = await api("/api/ncf/status");
+        if (s2.status === "ready") {
+          clearInterval(t);
+          box.innerHTML = `<div class="empty">Model ready — click <b>Recommend</b> or <b>Explain</b> again.</div>`;
+        } else {
+          box.innerHTML = `<div class="empty">NCF model ${escapeHtml(s2.status)}… ${s2.progress ? Math.round(s2.progress * 100) : 0}%</div>`;
+        }
+      } catch { clearInterval(t); }
+    }, 1000);
   }
 
   // ------------------------------------------------------------ browse

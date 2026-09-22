@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 import database
 import posters
 import recommend
+import ncf_serving
 from auth import create_token, hash_password, verify_password, verify_token
 import fl_trainer
 from fl_trainer import MANAGER, RunConfig
@@ -23,6 +24,7 @@ FRONTEND = BASE_DIR / "frontend"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db(DB_PATH)
+    ncf_serving.SERVER.ensure()
     yield
 
 
@@ -80,6 +82,14 @@ class FLStartBody(BaseModel):
     use_he: bool = True
     use_secagg: bool = True
     use_shap: bool = True
+
+
+class NCFRecBody(BaseModel):
+    k: int = Field(default=8, ge=3, le=24)
+
+
+class NCFXaiBody(BaseModel):
+    items: list[int] = Field(default_factory=list, max_length=12)
 
 
 # ---------------------------------------------------------------- auth routes
@@ -287,6 +297,37 @@ def fl_start(body: FLStartBody, authorization: str | None = Header(default=None)
 @app.get("/api/fl/status")
 def fl_status():
     return MANAGER.state()
+
+
+# ---------------------------------------------------------------- NCF + XAI routes
+
+@app.get("/api/ncf/status")
+def ncf_status(authorization: str | None = Header(default=None)):
+    st = ncf_serving.SERVER.state()
+    uid = _current_user(authorization)
+    if uid is not None:
+        st["user_ratings"] = len(recommend.get_user_ratings(uid))
+    return st
+
+
+@app.post("/api/ncf/recommend")
+def ncf_recommend(body: NCFRecBody, authorization: str | None = Header(default=None)):
+    uid = _require_user(_current_user(authorization))
+    if not ncf_serving.SERVER.ready():
+        st = ncf_serving.SERVER.state()
+        raise HTTPException(status_code=409, detail=f"NCF model is {st['status']}: {st['message']}")
+    return ncf_serving.SERVER.recommend(uid, body.k)
+
+
+@app.post("/api/ncf/xai")
+def ncf_xai(body: NCFXaiBody, authorization: str | None = Header(default=None)):
+    uid = _require_user(_current_user(authorization))
+    if not ncf_serving.SERVER.ready():
+        st = ncf_serving.SERVER.state()
+        raise HTTPException(status_code=409, detail=f"NCF model is {st['status']}: {st['message']}")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="No items to explain")
+    return ncf_serving.SERVER.explain(uid, body.items[:12])
 
 
 # ---------------------------------------------------------------- SPA shell
