@@ -404,18 +404,31 @@
     (res.items || []).forEach((it, i) => {
       const card = g.querySelectorAll(".card")[i];
       if (!card) return;
+      const slot = el("div", "xai-card hidden");
+      slot.addEventListener("click", e => e.stopPropagation());
+      card.appendChild(slot);
       const btn = el("button", "xai-btn", "⚡ Explain why");
       btn.title = `Explain why ${it.title_clean} was recommended`;
       btn.addEventListener("click", async e => {
         e.stopPropagation();
         if (!state.token) { openAuthModal("login"); return; }
-        dock.innerHTML = `<div class="spinner"></div>`;
+        const expanded = !slot.classList.contains("hidden");
+        if (expanded) {
+          slot.classList.add("hidden");
+          btn.textContent = "⚡ Explain why";
+          return;
+        }
+        slot.classList.remove("hidden");
+        slot.innerHTML = `<div class="spinner"></div>`;
+        btn.textContent = "…";
         try {
           const xr = await api("/api/ncf/xai", { method: "POST", body: JSON.stringify({ items: [it.movieId] }) });
-          renderNcfXai(dock, xr);
-          dock.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          renderNcfXai(slot, xr, true);
+          btn.textContent = "Hide";
+          slot.scrollIntoView({ behavior: "smooth", block: "nearest" });
         } catch (err) {
-          dock.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+          slot.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+          btn.textContent = "⚡ Explain why";
         }
       });
       const actions = card.querySelector(".card-actions");
@@ -485,14 +498,14 @@
     return panel;
   }
 
-  function renderNcfXai(box, res) {
+  function renderNcfXai(box, res, compact) {
     box.innerHTML = "";
     if (!res.explanations || !res.explanations.length) {
       box.appendChild(el("div", "empty", "Nothing to explain yet — click Recommend first."));
       return;
     }
     (res.explanations || []).forEach(x => box.appendChild(explanationPanel(x)));
-    box.appendChild(el("p", "card-meta", escapeHtml(res.note)));
+    if (!compact) box.appendChild(el("p", "card-meta", escapeHtml(res.note)));
   }
 
   function personalLabel(method) {
