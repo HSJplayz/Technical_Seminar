@@ -1,6 +1,8 @@
 """MovieLens 32M e-commerce-style site + Federated Learning research backend."""
+import csv
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Header
@@ -9,13 +11,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import database
+import he_fl
 import posters
 import recommend
 import ncf_serving
 from auth import create_token, hash_password, verify_password, verify_token
 import fl_trainer
 from fl_trainer import MANAGER, RunConfig
-from config import DB_PATH
+from config import DB_PATH, FL_RESULT_FILE, SWEEP_RESULT_FILE, SWEEP_ATTACK_CSV
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND = BASE_DIR / "frontend"
@@ -24,6 +27,7 @@ FRONTEND = BASE_DIR / "frontend"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db(DB_PATH)
+    fl_trainer.MANAGER.load_persisted()
     ncf_serving.SERVER.ensure()
     yield
 
@@ -297,6 +301,77 @@ def fl_start(body: FLStartBody, authorization: str | None = Header(default=None)
 @app.get("/api/fl/status")
 def fl_status():
     return MANAGER.state()
+
+
+# ---------------------------------------------------------------- latest results (privacy dashboard)
+
+def _read_json_file(path: Path):
+    try:
+        if not path or not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _file_mtime(path: Path):
+    try:
+        if path is None or not path.exists():
+            return None
+        return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+    except Exception:
+        return None
+
+
+def _read_attack_csv(path: Path):
+    try:
+        if path is None or not path.exists():
+            return None
+        with path.open(newline="", encoding="utf-8-sig") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return None
+
+
+@app.get("/api/results")
+def results():
+    """Aggregated 'latest results' for the Privacy dashboard. Every field is
+    read fresh from the persisted artifacts, so re-running any experiment
+    updates this endpoint automatically."""
+    fl_file = _read_json_file(FL_RESULT_FILE)
+    sweep = _read_json_file(SWEEP_RESULT_FILE)
+    attacks = _read_attack_csv(SWEEP_ATTACK_CSV)
+    st = MANAGER.state()
+    ncf = ncf_serving.SERVER.state()
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "dataset": database.db_stats(DB_PATH),
+        "fl": {
+            "status": st.get("status"),
+            "elapsed": st.get("elapsed"),
+            "file_mtime": _file_mtime(FL_RESULT_FILE),
+            "result": fl_file,
+        },
+        "ncf": {
+            "status": ncf.get("status"),
+            "elapsed": ncf.get("elapsed"),
+            "model": ncf.get("model"),
+            "file_mtime": _file_mtime(ncf_serving.SERVER.model_path),
+        },
+        "sweep": {
+            "file_mtime": _file_mtime(SWEEP_RESULT_FILE),
+            "attack_mtime": _file_mtime(SWEEP_ATTACK_CSV),
+            "data": sweep,
+            "attacks": attacks,
+        },
+        "he": {
+            "device": he_fl.CKKS_AVAILABLE,
+            "scheme": "CKKS",
+            "poly_modulus_degree": he_fl.N,
+            "slots": he_fl.SLOTS,
+            "scale": he_fl.SCALE,
+        },
+    }
 
 
 # ---------------------------------------------------------------- NCF + XAI routes

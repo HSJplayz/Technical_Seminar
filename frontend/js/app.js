@@ -371,17 +371,21 @@
     if (!state.token) { openAuthModal("login"); return; }
     const box = $("#ncf-results");
     box.classList.remove("hidden");
-    box.innerHTML = `<div class="spinner"></div>`;
     try {
       let items = state.ncfItems && state.ncfItems.length ? state.ncfItems.slice(0, 6) : null;
       if (!items) {
         const rec = await api("/api/ncf/recommend", { method: "POST", body: JSON.stringify({ k: 6 }) });
         items = rec.items;
+        renderNcfRec(box, rec);
       }
+      const target = $(".xai-dock", box) || box;
+      target.innerHTML = `<div class="spinner"></div>`;
       const res = await api("/api/ncf/xai", { method: "POST", body: JSON.stringify({ items: items.map(i => i.movieId) }) });
-      renderNcfXai(box, res);
+      renderNcfXai(target, res);
+      target.scrollIntoView({ behavior: "smooth", block: "nearest" });
     } catch (e) {
-      box.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+      const target = $(".xai-dock", box) || box;
+      target.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
       await waitNcfReady(box);
     }
   }
@@ -392,36 +396,112 @@
     box.innerHTML = "";
     box.appendChild(head);
     box.appendChild(el("p", "card-meta",
-      "Global model: FedAvg + local DP trained across MovieLens clients. Your own P vector is fit on the server from <b>your ratings</b> only — no other user's data."));
-    box.appendChild(grid(res.items || []));
+      "Global model: FedAvg + local DP trained across MovieLens clients. Your P vector is fit on the server from <b>your ratings + saved basket</b> only — no other user's data."));
+    const g = grid(res.items || []);
+    box.appendChild(g);
+    const dock = el("div", "xai-dock");
+    box.appendChild(dock);
+    (res.items || []).forEach((it, i) => {
+      const card = g.querySelectorAll(".card")[i];
+      if (!card) return;
+      const btn = el("button", "xai-btn", "⚡ Explain why");
+      btn.title = `Explain why ${it.title_clean} was recommended`;
+      btn.addEventListener("click", async e => {
+        e.stopPropagation();
+        if (!state.token) { openAuthModal("login"); return; }
+        dock.innerHTML = `<div class="spinner"></div>`;
+        try {
+          const xr = await api("/api/ncf/xai", { method: "POST", body: JSON.stringify({ items: [it.movieId] }) });
+          renderNcfXai(dock, xr);
+          dock.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        } catch (err) {
+          dock.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        }
+      });
+      const actions = card.querySelector(".card-actions");
+      if (actions) actions.appendChild(btn);
+    });
   }
 
-  async function renderNcfXai(box, res) {
+  function explanationPanel(x) {
+    const attrs = x.attributions || [];
+    const maxV = Math.max(1e-9, ...attrs.map(a => Math.abs(a.importance)));
+    const nav = x.narrative || {};
+    const up = attrs.filter(a => a.importance >= 0).slice(0, 3);
+    const down = attrs.filter(a => a.importance < 0).slice(0, 3);
+    const lines = [];
+
+    lines.push(`<li><b>Predicted ${x.score}/5</b> for you, vs a catalog baseline of ${x.base_score != null ? x.base_score + "/5" : "—"}.</li>`);
+    if (up.length) {
+      lines.push(`<li><b>Why it scores higher:</b> ${up.map(a =>
+        `${escapeHtml(a.feature)} <b>+${a.importance}</b> (${a.share != null ? Math.abs(a.share).toFixed(1) : "—"}% of genre effect)`).join(", ")}.</li>`);
+    }
+    if (down.length) {
+      lines.push(`<li><b>What holds it back:</b> ${down.map(a =>
+        `${escapeHtml(a.feature)} <b>${a.importance}</b>`).join(", ")}.</li>`);
+    }
+    const avgs = nav.genre_averages || [];
+    if (avgs.length) {
+      lines.push(`<li><b>Your taste:</b> across your ${nav.you_rate_count || 0} ratings you average ${nav.user_avg_rating != null ? nav.user_avg_rating + "/5" : "—"}; within this movie's genres you rate ${avgs.map(a => `${escapeHtml(a.genre)} ≈ ${a.avg}`).join(", ")}.</li>`);
+    } else if (nav.user_avg_rating != null) {
+      lines.push(`<li><b>Your taste:</b> across your ${nav.you_rate_count || 0} ratings you average ${nav.user_avg_rating}/5.</li>`);
+    }
+    const sim = nav.similar || [];
+    if (sim.length) {
+      lines.push(`<li><b>Closest titles you rated:</b> ${sim.map(s =>
+        `“${escapeHtml(s.title_clean)}” (you gave ${s.rating}/5 — shares ${escapeHtml((s.genres || []).slice(0, 2).join(" + "))})`).join("; ")} — the match is driven by your taste on those genres.</li>`);
+    }
+    if (nav.in_basket) {
+      const savedAs = nav.in_basket === "favorite" ? "favorited" : "saved for later";
+      lines.push(`<li><b>Your basket:</b> you ${savedAs} this movie (treated as an implicit ~${nav.basket_boost}/5), which pushes it up for you.</li>`);
+    }
+    let verdict = "predicted from its genre profile for you.";
+    if (nav.user_avg_rating != null && x.score != null) {
+      const diff = x.score - nav.user_avg_rating;
+      verdict = diff >= 0.25
+        ? `≈${Math.round((diff * 100) / 4)}% above your average — a strong match.`
+        : diff < -0.25
+          ? `≈${Math.round((-diff * 100) / 4)}% below your average — a lighter match.`
+          : "close to your average rating.";
+    }
+    lines.push(`<li><b>Verdict:</b> ${verdict}</li>`);
+
+    const barHTML = `<summary>Genre attributions (SHAP bars) — detail</summary>
+      <ul class="bar-list">${attrs.map(a =>
+        `<li><span style="width:110px">${escapeHtml(a.feature)}</span>
+           <div class="bar"><div style="width:${Math.max(4, Math.abs(a.importance) / maxV * 100)}%;background:${a.importance >= 0 ? "#007185" : "#c40000"}"></div></div>
+           <span class="mono">${a.importance >= 0 ? "+" : ""}${a.importance}</span></li>`).join("")}
+      </ul>`;
+
+    const panel = el("div", "panel xai-panel");
+    panel.innerHTML = `
+      <h3>Why ${escapeHtml(x.title_clean)}? ${x.year ? `<small style="color:#565959;font-weight:400">(${x.year})</small>` : ""}
+        <span class="pill blue">pred ${x.score}/5</span></h3>
+      <p class="card-meta">${escapeHtml((x.genres || []).join(" · "))}</p>
+      <ul class="xai-narrative">${lines.join("")}</ul>
+      <details class="xai-detail">${barHTML}</details>`;
+    return panel;
+  }
+
+  function renderNcfXai(box, res) {
     box.innerHTML = "";
-    const head = el("h2", "section-title", "Why did the model recommend this? <small>SHAP genre attributions</small>");
-    box.appendChild(head);
+    if (!res.explanations || !res.explanations.length) {
+      box.appendChild(el("div", "empty", "Nothing to explain yet — click Recommend first."));
+      return;
+    }
+    (res.explanations || []).forEach(x => box.appendChild(explanationPanel(x)));
     box.appendChild(el("p", "card-meta", escapeHtml(res.note)));
-    (res.explanations || []).forEach(x => {
-      const panel = el("div", "panel");
-      const maxV = Math.max(1e-9, ...x.attributions.map(a => Math.abs(a.importance)));
-      panel.innerHTML = `
-        <h3>${escapeHtml(x.title_clean)} ${x.year ? `<small style="color:#565959;font-weight:400">(${x.year})</small>` : ""}
-          <span class="pill gray">pred ${x.score}/5</span></h3>
-        <p class="card-meta">${escapeHtml((x.genres || []).join(" · "))}</p>
-        <ul class="bar-list">${(x.attributions || []).map(a =>
-          `<li><span style="width:110px">${escapeHtml(a.feature)}</span>
-             <div class="bar"><div style="width:${Math.max(4, Math.abs(a.importance) / maxV * 100)}%;background:${a.importance >= 0 ? "#007185" : "#c40000"}"></div></div>
-             <span class="mono">${a.importance >= 0 ? "+" : ""}${a.importance}</span></li>`).join("")}
-        </ul>`;
-      box.appendChild(panel);
-    });
-    if (!res.explanations || !res.explanations.length) box.appendChild(el("div", "empty", "Nothing to explain — run Recommend first."));
-    box.appendChild(el("p", "card-meta",
-      "Each bar is the SHAP (local-surrogate) contribution of that genre to the predicted rating for <b>you</b>."));
   }
 
   function personalLabel(method) {
-    return { sgd_your_ratings: "from your ratings (SGD)", mean_of_your_ratings: "mean of your rated movies", cold_start: "cold-start profile" }[method] || method;
+    return {
+      sgd_your_ratings: "from your ratings (SGD)",
+      mean_your_ratings: "mean of your rated movies",
+      cold_start: "cold-start profile",
+      sgd_ratings_basket: "from your ratings + basket (SGD)",
+      mean_ratings_basket: "mean of your ratings + basket",
+      basket_only: "from your saved basket",
+    }[method] || method;
   }
 
   async function waitNcfReady(box) {
@@ -704,6 +784,7 @@
   const dashTabs = ["overview", "federated", "privacy", "shap"];
   let dashActive = "overview";
   let flPoll = null;
+  let resultsPoll = null;
 
   async function dashboardView(app) {
     app.innerHTML = `
@@ -855,47 +936,200 @@
         <span class="mono" style="color:#565959;margin-left:8px">(${res.accuracy_gain.from}% → ${res.accuracy_gain.to}%)</span></p>` : ""}`;
   }
 
-  // ------------------------------------------------------------ privacy (ε vs accuracy)
+  // ------------------------------------------------------------ privacy (latest results + ε vs accuracy)
+  function fmtIso(iso) {
+    return iso ? String(iso).replace("T", " ").slice(0, 19) : "—";
+  }
+
+  function cfgChip(text) {
+    return `<span class="cfg-chip">${escapeHtml(text)}</span>`;
+  }
+
+  function startResultsPoll(body) {
+    clearInterval(resultsPoll);
+    body.innerHTML = `<div class="spinner"></div>`;
+    const render = () => renderPrivacyResults(body, () => startResultsPoll(body));
+    render();
+    resultsPoll = setInterval(async () => {
+      if (dashActive !== "privacy" || !$("#privacy-root")) { clearInterval(resultsPoll); return; }
+      await renderPrivacyResults(body, () => startResultsPoll(body));
+    }, 5000);
+  }
+
   async function dashPrivacy(body) {
-    const fl = await api("/api/fl/status");
-    body.innerHTML = `<div class="panel">
-      <h3>Privacy–accuracy trade-off</h3>
+    startResultsPoll(body);
+  }
+
+  async function renderPrivacyResults(body, onRefresh) {
+    const res = await api("/api/results");
+    body.id = "privacy-root";
+    body.innerHTML = "";
+
+    const fl = (res.fl && res.fl.result) || null;
+    const ncf = res.ncf || {};
+    const mm = ncf.model || {};
+    const sweep = (res.sweep && res.sweep.data) || null;
+    const atk = (res.sweep && res.sweep.attacks) || [];
+    const he = res.he || {};
+    const c = res.dataset || {};
+
+    const refreshRow = el("div", "refresh-row");
+    refreshRow.innerHTML = `<b>Latest results</b>
+      <span class="mono muted">as of ${escapeHtml(fmtIso(res.generated_at))}</span>
+      <button class="btn-ghost" id="privacy-refresh" style="margin-left:auto">↻ Refresh</button>`;
+    body.appendChild(refreshRow);
+    $("#privacy-refresh").addEventListener("click", onRefresh);
+
+    // ---- headline stat cards
+    const gain = (fl && fl.accuracy_gain) || null;
+    const verdict = (sweep && sweep.verdict) || [];
+    const ok = verdict.filter(v => v.meets_theory).length;
+    const headline = el("div", "panel");
+    headline.innerHTML = `<h3>Live experiment snapshot</h3>
+      <div class="stat-row">
+        <div class="stat"><div class="num">${fl ? "+" + gain.pct + "%" : "—"}</div>
+          <div class="lbl">FL accuracy gain${gain ? ` (ε ${gain.from_epsilon}→${gain.to_epsilon})` : ""}</div></div>
+        <div class="stat"><div class="num">${escapeHtml(ncf.status || "—")}</div>
+          <div class="lbl">federated NCF model</div></div>
+        <div class="stat"><div class="num">${sweep ? ok + "/" + verdict.length : "—"}</div>
+          <div class="lbl">privacy-relaxation pairs hold</div></div>
+        <div class="stat"><div class="num">${he.device ? "on" : "off"}</div>
+          <div class="lbl">CKKS · N=${he.poly_modulus_degree}</div></div>
+      </div>`;
+    body.appendChild(headline);
+
+    // ---- dataset snapshot
+    const ds = el("div", "panel");
+    ds.innerHTML = `<h3>Dataset snapshot <small class="muted">MovieLens 32M</small></h3>
+      <div class="stat-row">
+        <div class="stat"><div class="num">${(c.ratings / 1e6 || 0).toFixed(1)}M</div><div class="lbl">ratings</div></div>
+        <div class="stat"><div class="num">${(c.movies / 1e3 || 0).toFixed(0)}K</div><div class="lbl">movies</div></div>
+        <div class="stat"><div class="num">${(c.tags / 1e6 || 0).toFixed(2)}M</div><div class="lbl">tags</div></div>
+        <div class="stat"><div class="num">${c.users || 0}</div><div class="lbl">site users</div></div>
+      </div>`;
+    body.appendChild(ds);
+
+    // ---- federated NCF serving model
+    const ncfPanel = el("div", "panel");
+    ncfPanel.innerHTML = `<h3>Federated NCF — the Recommend model</h3>
+      ${mm.embed_dim ? `<div class="cfg-chips">
+        ${cfgChip("embed " + mm.embed_dim)}${cfgChip("hidden " + mm.hidden)}
+        ${cfgChip("rounds " + mm.rounds)}${cfgChip("clients " + mm.clients)}
+        ${cfgChip("ε " + mm.epsilon)}${cfgChip("clip " + mm.clip_norm)}
+        ${mm.catalog ? cfgChip("catalog " + Number(mm.catalog).toLocaleString()) : ""}
+        ${mm.personalization ? cfgChip(mm.personalization) : ""}</div>` : ""}
+      ${(mm.saved_at || ncf.file_mtime) ? `<p class="mono muted" style="margin-top:10px">trained ${escapeHtml(fmtIso(mm.saved_at || ncf.file_mtime))}${mm.trained_in_s ? ` in ${mm.trained_in_s}s` : ""}</p>` : ""}
+      <p>Personalization is <b>user-local</b>: a <code>P_u</code> vector is fit on the server per request from
+        <b>your ratings + saved basket</b> — no other user's data, recomputed fresh each call.
+        The global weights come from FedAvg + local DP over MovieLens clients only.</p>`;
+    body.appendChild(ncfPanel);
+
+    // ---- full-stack FL (latest run)
+    const flPanel = el("div", "panel");
+    if (fl) {
+      const rows = (fl.results || []);
+      const flWhen = fl.saved_at || res.fl.file_mtime || null;
+      const kept = flWhen ? `<p class="mono muted">as of ${escapeHtml(fmtIso(flWhen))}</p>` : "";
+      flPanel.innerHTML = `<h3>Full-stack FL (linear) — latest run</h3>
+        ${fl.config ? `<p class="mono muted">config: ${escapeHtml(JSON.stringify(fl.config))}</p>` : ""}
+        <table class="data">
+          <tr><th>ε (local)</th><th>effective ε</th><th>MAE</th><th>RMSE</th><th>full-stack acc.</th><th>plain local-DP acc.</th><th>features kept (SHAP)</th></tr>
+          ${rows.map(r => `<tr>
+            <td>${r.epsilon}</td><td>${r.effective_epsilon}</td><td>${r.mae}</td><td>${r.rmse}</td>
+            <td><b>${r.accuracy}%</b></td><td>${r.plain_accuracy}%</td><td>${r.features_kept}</td></tr>`).join("")}
+        </table>
+        ${gain ? `<p><span class="pill green">accuracy gain ε=${gain.from_epsilon} → ${gain.to_epsilon}: +${gain.pct}%</span>
+          <span class="mono muted" style="margin-left:8px">(${gain.from}% → ${gain.to}%)</span></p>` : ""}
+        ${kept}`;
+    } else {
+      flPanel.innerHTML = `<h3>Full-stack FL (linear) — latest run</h3>
+        <div class="empty">No FL run yet — configure and run on the <b>Federated Learning</b> tab.</div>`;
+    }
+    body.appendChild(flPanel);
+
+    // ---- ε vs accuracy chart (same fl data as the FL results table)
+    const chartPanel = el("div", "panel");
+    chartPanel.innerHTML = `<h3>Privacy–accuracy trade-off</h3>
       <p>For each ε the model is trained end-to-end. <b>Plain local DP</b> pays the full noise cost at the client;
         the <b>full stack</b> (SecAgg + CKKS + SHAP selection) obtains privacy amplification from aggregation
-        and recovers accuracy via SHAP-guided feature pruning — so ε = 2.5 achieves accuracy that plain ε = 1
-        cannot, while the effective per-user privacy is preserved.</p>
-      <div class="canvas-box"><canvas id="eps-chart"></canvas></div>
-      ${fl.result ? `<p class="mono" style="color:#565959">Last run: ${fl.result.results.length} ε-points
-        (accuracy proxy = 1 − MAE/4 on held-out ratings). Gain: <b>${fl.result.accuracy_gain.pct}%</b></p>` :
-        `<div class="empty">Run a training sweep on the <b>Federated Learning</b> tab to populate this chart.</div>`}
-    </div>`;
-    if (!fl.result || !fl.result.results.length) return;
+        and recovers accuracy via SHAP-guided feature pruning.</p>
+      <div class="canvas-box"><canvas id="eps-chart"></canvas></div>`;
+    body.appendChild(chartPanel);
+    if (fl && fl.results && fl.results.length) {
+      const rows = [...fl.results].sort((a, b) => a.epsilon - b.epsilon);
+      Charts.line($("#eps-chart"), {
+        labels: rows.map(r => r.epsilon),
+        series: [
+          { name: "Full stack (DP + SecAgg + CKKS + SHAP)", points: rows.map(r => r.accuracy) },
+          { name: "Plain local DP only", points: rows.map(r => r.plain_accuracy) },
+        ],
+        colors: ["#007185", "#d4a017"],
+      });
+    }
 
-    const rows = [...fl.result.results].sort((a, b) => a.epsilon - b.epsilon);
-    const labels = rows.map(r => r.epsilon);
-    const fullPts = rows.map(r => r.accuracy);
-    const plainPts = rows.map(r => r.plain_accuracy);
-    Charts.line($("#eps-chart"), {
-      labels,
-      series: [
-        { name: "Full stack (DP + SecAgg + CKKS + SHAP)", points: fullPts },
-        { name: "Plain local DP only", points: plainPts },
-      ],
-      colors: ["#007185", "#d4a017"],
-    });
+    // ---- mechanism sweep (all stacks, everything expanded)
+    const sw = el("div", "panel");
+    sw.innerHTML = `<h3>Mechanism sweep — does privacy hold? (federated NCF)</h3>
+      <p>7 stacks × ε-targets. <b>Nominal ε</b> is the local noise budget; <b>effective ε</b> = nominal/√K is what a
+        server-side adversary faces when individual updates are hidden (SecAgg and/or CKKS).</p>
+      ${sweep ? `
+        <table class="data">
+          <tr><th>stack</th><th>mechanisms</th><th>nominal ε</th><th>σ</th><th>effective ε</th><th>MAE</th><th>RMSE</th><th>HR@10</th><th>NDCG@10</th></tr>
+          ${sweep.rows.filter(r => r.stack !== "ceiling").map(r => `<tr>
+            <td>${escapeHtml(r.stack)}</td><td>${escapeHtml(r.mechanisms)}</td>
+            <td>${r.nominal_eps != null ? r.nominal_eps : "∞"}</td><td>${r.sigma}</td>
+            <td>${r.effective_epsilon != null ? r.effective_epsilon : "∞"}</td>
+            <td>${r.mae}</td><td>${r.rmse}</td><td>${r["hr@10"]}</td><td>${r["ndcg@10"]}</td></tr>`).join("")}
+          ${sweep.ceiling ? `<tr><td><b>ceiling</b></td><td>none</td><td>∞</td><td>0</td><td>∞</td>
+            <td><b>${sweep.ceiling.mae}</b></td><td>${sweep.ceiling.rmse}</td><td>${sweep.ceiling["hr@10"]}</td><td>${sweep.ceiling["ndcg@10"]}</td></tr>` : ""}
+        </table>
+        <p class="mono muted">sweep as of ${escapeHtml(fmtIso(sweep.saved_at))} · K=${sweep.k_clients} clients · amplification √K=${sweep.amplification}</p>
+        ${verdict.length ? `<p><span class="pill ${ok === verdict.length ? "green" : "blue"}">relaxation confirmed ${ok}/${verdict.length} (stack, ε)-pairs</span></p>
+          <table class="data">
+            <tr><th>eff. ε</th><th>stack</th><th>plain-DP MAE</th><th>SecAgg/HE MAE</th><th>gain</th><th>holds?</th></tr>
+            ${verdict.map(v => `<tr><td>${v.effective_eps}</td><td>${escapeHtml(v.stack)}</td>
+              <td>${v.mae_plain}</td><td>${v.mae_secagg}</td><td>${v.acc_gain_pct}%</td>
+              <td>${v.meets_theory ? "✓" : "✗"}</td></tr>`).join("")}
+          </table>` : ""}
+        <div class="canvas-box"><canvas id="sweep-bar"></canvas></div>` 
+        : `<div class="empty">Sweep not run yet — run <code>python backend/run_ncf_sweep.py</code>.</div>`}`;
+    body.appendChild(sw);
+    if (sweep && sweep.rows && sweep.rows.length) {
+      const pick = {};
+      sweep.rows.forEach(r => {
+        const rel = ["dp", "dp_secagg", "dp_he", "dp_secagg_he"];
+        if (rel.includes(r.stack) && r.effective_epsilon === 1.0 && pick[r.stack] == null) pick[r.stack] = r.mae;
+        if (["he", "secagg", "secagg_he"].includes(r.stack) && pick[r.stack] == null) pick[r.stack] = r.mae;
+      });
+      if (sweep.ceiling) pick.ceiling = sweep.ceiling.mae;
+      const order = ["dp", "dp_secagg", "dp_he", "dp_secagg_he", "he", "secagg", "secagg_he", "ceiling"];
+      if (order.some(k => pick[k] != null)) {
+        Charts.bar($("#sweep-bar"), {
+          labels: order.map(k => (k === "dp_secagg" ? "dp+secagg" : k === "dp_he" ? "dp+he" : k === "dp_secagg_he" ? "dp+secagg+he" : k)),
+          values: order.map(k => (pick[k] != null ? pick[k] : 0)),
+        });
+      }
+    }
 
-    const note = el("div", "panel");
-    const gain = fl.result.accuracy_gain || {};
-    note.innerHTML = `<h3>Privacy accounting &amp; the result</h3>
-      <p>Local DP adds Gaussian noise σ = (2C/n)·√(2·ln(1.25/δ))/ε at each client
-      (C = ${escapeHtml(String(fl.result.config.clip_norm))}, δ = ${fl.result.config.delta}).
-      Secure aggregation over ${fl.result.config.clients} clients amplifies privacy:
-      the server only sees the encrypted, masked sum, so the effective per-user
-      guarantee is ≈ ε/√K — <b>${escapeHtml(String(fl.result.config.secagg))}</b> applies here.
-      SHAP then prunes the features that heavy noise pollutes, recovering accuracy.</p>
-      <p><span class="pill green">Measured: full stack ${gain.from_epsilon != null ? "ε=" + gain.from_epsilon : ""} ${gain.from || "—"}% → ${gain.to_epsilon != null ? "ε=" + gain.to_epsilon : ""} ${gain.to || "—"}% = <b>+${gain.pct || 0}%</b> accuracy</span>
-      &nbsp;<span class="pill blue">paper target: 10–15% at ε ≤ 2.5</span></p>`;
-    body.appendChild(note);
+    // ---- attacks (full table)
+    const atkPanel = el("div", "panel");
+    if (atk.length) {
+      atkPanel.innerHTML = `<h3>Attack evaluation <small class="muted">server-side adversary</small></h3>
+        <table class="data">
+          <tr><th>stack</th><th>nominal ε</th><th>MAE</th><th>MIA AUC</th><th>MIA TPR@1%FPR</th><th>attr. MAE</th><th>leak channel</th><th>batch recall</th><th>recon MAE</th></tr>
+          ${atk.map(r => `<tr><td>${escapeHtml(r.stack)}</td><td>${escapeHtml(r.nominal_eps)}</td>
+            <td>${escapeHtml(r.utility_mae)}</td><td>${escapeHtml(r.mia_auc)}</td><td>${escapeHtml(r.mia_tpr_at_1pct_fpr)}</td>
+            <td>${escapeHtml(r.attr_mae_members)}</td><td>${escapeHtml(r.leak_channel)}</td>
+            <td>${escapeHtml(r.leak_batch_recall)}</td><td>${escapeHtml(r.leak_recon_mae)}</td></tr>`).join("")}
+        </table>`;
+    } else {
+      atkPanel.innerHTML = `<h3>Attack evaluation</h3>
+        <div class="empty">Attack table appears after the sweep runs.</div>`;
+    }
+    body.appendChild(atkPanel);
+
+    body.appendChild(el("p", "card-meta",
+      "Auto-refreshes every 5 s while this tab is open. Each number is read live from the persisted run files, so re-running any experiment updates the view."));
   }
 
   // ------------------------------------------------------------ SHAP

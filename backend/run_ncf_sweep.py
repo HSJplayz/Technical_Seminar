@@ -334,6 +334,7 @@ def main() -> None:
         "ceiling": ceiling_row, "rows": out_rows,
         "verdict": verdict, "demo": demo_recs,
         "attacks": attacks_res,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     OUT.write_text(json.dumps(results, default=str, indent=1))
     _write_attack_csv(attacks_res, rows)

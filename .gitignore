@@ -11,6 +11,9 @@ data/*.err.log
 # Federated NCF serving model (rebuilt on demand by ncf_serving.py)
 data/*.npz
 
+# Persisted federated-LEARNING result (recreated by fl_trainer.py)
+data/*.json
+
 # OS / editor
 Thumbs.db
 .DS_Store

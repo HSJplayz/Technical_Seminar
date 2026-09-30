@@ -15,6 +15,7 @@ Per round per client:
   after training -> exact linear SHAP on a *public* catalog sample -> feature
   selection -> refit on selected features -> accuracy gain
 """
+import json
 import logging
 import math
 import threading
@@ -23,6 +24,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from config import FL_RESULT_FILE
 from database import cursor
 
 log = logging.getLogger("fl")
@@ -501,19 +503,54 @@ class TrainingManager:
                 self.message = msg
         try:
             res = run_experiment(cfg, progress)
+            if on_complete:
+                try:
+                    on_complete()
+                except Exception:
+                    pass
             with self._lock:
                 self.result = res
+                self.progress = 1.0
+                self.message = "complete"
                 self.status = "done"
+            self._persist(res)
         except Exception as e:
             log.exception("FL run failed")
             with self._lock:
                 self.result = {"error": str(e)}
                 self.status = "error"
-        if on_complete:
-            try:
-                on_complete()
-            except Exception:
-                pass
+
+    def _persist(self, res: dict) -> None:
+        """Write the finished run to disk so a restart keeps the results and the
+        dashboard charts / movie-page SHAP / federated recommendations intact."""
+        try:
+            res["saved_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            FL_RESULT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = FL_RESULT_FILE.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(FL_RESULT_FILE)
+        except Exception:
+            log.exception("persist FL result failed")
+
+    def load_persisted(self) -> bool:
+        """Restore a previous run's result at boot and reinstall its serving model."""
+        try:
+            if not FL_RESULT_FILE.exists():
+                return False
+            res = json.loads(FL_RESULT_FILE.read_text(encoding="utf-8"))
+            if not isinstance(res, dict) or res.get("error"):
+                return False
+            with self._lock:
+                self.result = res
+                self.progress = 1.0
+                self.message = "loaded persisted result"
+                self.status = "done"
+            if res.get("model_w"):
+                return install_serving_model(res)
+            return True
+        except Exception:
+            log.exception("load persisted FL result failed")
+            return False
 
     def state(self) -> dict:
         with self._lock:

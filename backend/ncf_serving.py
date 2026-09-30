@@ -30,7 +30,7 @@ import numpy as np
 from config import DATA_DIR
 from database import cursor
 from ncf_fl import NCF
-from recommend import get_movie, get_user_ratings
+from recommend import get_movie, get_user_ratings, get_user_list, list_status
 
 log = logging.getLogger("ncf_serving")
 log.setLevel(logging.INFO)
@@ -49,6 +49,9 @@ FIT_LR = 0.04
 CANDIDATE_POP_MIN = 30       # rank over popular catalog items
 CANDIDATE_CAP = 8000
 FIT_MLEN = 100               # max ratings used to fit P_u
+
+# basket -> implicit rating signal (personalization only; never training data)
+IMPLICIT_RATING = {"favorite": 4.5, "watch_later": 3.5}
 
 
 def _one_hot(genres: str) -> np.ndarray:
@@ -129,21 +132,65 @@ class NCFFederatedServer:
     # ------------------------------------------------------------ personalization
 
     def _user_embedding(self, user_id: int) -> tuple[np.ndarray, str]:
-        """Fit P_u from *this user's own ratings* only. Returns (p, method)."""
+        """Fit P_u from *this user's own ratings* plus any saved basket items
+        (favorites / watch-later as implicit ratings). Returns (p, method)."""
         rated = get_user_ratings(user_id)
-        pairs = []
-        for r in rated[:FIT_MLEN]:
-            idx = np.searchsorted(self.cat_ids, r["movieId"])
-            if idx < len(self.cat_ids) and self.cat_ids[idx] == r["movieId"]:
-                pairs.append((self.cat_emb[idx], float(r["rating"])))
+        rated_pairs, rated_seen = self._embed_pairs(rated, 0, is_basket=False)
+        had_ratings = len(rated_pairs) > 0
+        basket_pairs = []
+        if len(rated_pairs) < FIT_MLEN:
+            basket_pairs = self._basket_pairs(user_id, rated_seen)
+        pairs = rated_pairs + basket_pairs
         if not pairs:
             return self.pop_mean.copy(), "cold_start"
         emb = np.stack([e for e, _r in pairs])
         vals = np.array([r for _e, r in pairs], dtype=float)
         if len(pairs) >= MIN_FIT_RATINGS:
             p = self._fit_p(emb, vals)
-            return p, "sgd_your_ratings"
-        return emb.mean(axis=0), "mean_of_your_ratings"
+            return p, self._method(had_ratings, bool(basket_pairs), "sgd")
+        return emb.mean(axis=0), self._method(had_ratings, bool(basket_pairs), "mean")
+
+    def _embed_pairs(self, rows, start: int, is_basket: bool) -> tuple[list, set[int]]:
+        pairs, seen = [], set()
+        for r in rows[:FIT_MLEN]:
+            idx = np.searchsorted(self.cat_ids, r["movieId"])
+            if idx < len(self.cat_ids) and self.cat_ids[idx] == r["movieId"]:
+                pairs.append((self.cat_emb[idx], float(r["rating"])))
+                seen.add(int(r["movieId"]))
+        return pairs, seen
+
+    def _basket_pairs(self, user_id: int, rated_seen: set[int]) -> list:
+        merged: dict[int, float] = {}
+        for lt in ("favorite", "watch_later"):
+            try:
+                items = get_user_list(user_id, lt)
+            except Exception:
+                continue
+            for it in items:
+                mid = int(it["movieId"])
+                if mid in rated_seen:
+                    continue
+                v = IMPLICIT_RATING[lt]
+                if mid in merged:
+                    merged[mid] = max(merged[mid], v)
+                else:
+                    merged[mid] = v
+        out = []
+        for mid, val in merged.items():
+            idx = np.searchsorted(self.cat_ids, mid)
+            if idx < len(self.cat_ids) and self.cat_ids[idx] == mid:
+                out.append((self.cat_emb[idx], val))
+            if len(out) >= FIT_MLEN:
+                break
+        return out
+
+    @staticmethod
+    def _method(had_ratings: bool, had_basket: bool, kind: str) -> str:
+        if had_ratings and had_basket:
+            return f"{kind}_ratings_basket"
+        if had_basket:
+            return "basket_only"
+        return f"{kind}_your_ratings"
 
     def _fit_p(self, emb: np.ndarray, vals: np.ndarray) -> np.ndarray:
         """Gradient descent on P_u only, freezing the global network."""
@@ -201,10 +248,13 @@ class NCFFederatedServer:
         """Explain each movie with a local linear surrogate over the 19 genre
         features, fit in the movie's genre neighbourhood using ONLY this user's
         personal vector P_u + the public catalog. Returns genre SHAP values of
-        the surrogate (exact for linear models)."""
+        the surrogate (exact for linear models) plus a plain-text narrative
+        built from the user's own ratings + basket + the public catalog."""
         p, method = self._user_embedding(user_id)
         gvecs = self._load_genres_full()
         rng = np.random.default_rng(2026)
+        rates = get_user_ratings(user_id)
+        rated_genres, user_avg = self._rated_genre_map(rates)
         exps = []
         for mid in movie_ids:
             m = get_movie(mid)
@@ -220,6 +270,8 @@ class NCFFederatedServer:
             top = nonzero[:6]
             z = sum(v for _, v in top)
             e = self.cat_emb[idx]
+            narrative = self._narrative(m, rates, rated_genres, user_avg,
+                                        list(IMPLICIT_RATING), list_status(user_id, int(mid)))
             exps.append({
                 "movieId": int(mid),
                 "title_clean": m["title_clean"],
@@ -235,13 +287,86 @@ class NCFFederatedServer:
                      "share": round(v / z * 100, 1) if z else 0.0}
                     for feat, v in top
                 ],
+                "narrative": narrative,
             })
         return {
             "explanations": exps,
             "personalized": method,
             "note": ("Attributions are SHAP values of a local linear surrogate over the 19 genre "
-                     "features, fit in each movie's genre neighbourhood from YOUR ratings + the "
-                     "public catalog + the global federated NCF model. No other user's data is used."),
+                     "features, fit in each movie's genre neighbourhood from YOUR ratings + YOUR "
+                     "basket + the public catalog + the global federated NCF model. No other "
+                     "user's data is used."),
+        }
+
+    def _rated_genre_map(self, rates: list[dict]) -> tuple[dict[int, list[str]], float | None]:
+        if not rates:
+            return {}, None
+        ids = [int(r["movieId"]) for r in rates]
+        genre_map: dict[int, list[str]] = {}
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            ph = ",".join("?" for _ in chunk)
+            with cursor() as (cur, _):
+                rows = cur.execute(
+                    f"SELECT movieId, genres FROM movies WHERE movieId IN ({ph})", chunk
+                ).fetchall()
+            for rr in rows:
+                genre_map[int(rr["movieId"])] = [
+                    g for g in str(rr["genres"]).split("|") if g and g != "(no genres listed)"
+                ]
+        avg = float(np.mean([float(r["rating"]) for r in rates])) if rates else None
+        return genre_map, avg
+
+    def _narrative(self, m: dict, rates: list[dict], rated_genres: dict[int, list[str]],
+                   user_avg: float | None, basket_keys: list[str],
+                   in_lists: dict[str, bool]) -> dict:
+        target = {g for g in m["genre_list"] if g and g != "(no genres listed)"}
+        gsum: dict[str, float] = {}
+        gcnt: dict[str, int] = {}
+        for r in rates:
+            gs = rated_genres.get(int(r["movieId"]))
+            if not gs:
+                continue
+            for g in gs:
+                if g in target:
+                    gsum[g] = gsum.get(g, 0.0) + float(r["rating"])
+                    gcnt[g] = gcnt.get(g, 0) + 1
+        averages = [{"genre": g, "avg": round(gsum[g] / gcnt[g], 2), "count": gcnt[g]}
+                    for g in gsum]
+        averages.sort(key=lambda x: (-x["avg"], -x["count"]))
+
+        cands = []
+        for r in rates:
+            gs = rated_genres.get(int(r["movieId"]))
+            if not gs or r["rating"] is None:
+                continue
+            shared = target & set(gs)
+            if not shared:
+                continue
+            cands.append((len(shared), float(r["rating"]), int(r["movieId"]), sorted(shared)))
+        cands.sort(key=lambda t: (-t[0], -t[1]))
+        similar = []
+        for ov, rating, rid, shared in cands[:3]:
+            mm = get_movie(rid)
+            if not mm:
+                continue
+            similar.append({
+                "movieId": rid,
+                "title_clean": mm["title_clean"],
+                "year": mm["year"],
+                "rating": round(rating, 1),
+                "overlap": ov,
+                "genres": shared,
+            })
+
+        in_basket = next((k for k in basket_keys if in_lists.get(k)), None)
+        return {
+            "user_avg_rating": round(user_avg, 2) if user_avg is not None else None,
+            "you_rate_count": len(rates),
+            "genre_averages": averages,
+            "similar": similar,
+            "in_basket": in_basket,
+            "basket_boost": IMPLICIT_RATING.get(in_basket) if in_basket else None,
         }
 
     def _surrogate_attrs(self, p, idx: int, gvecs: np.ndarray, rng, n_nb: int = 240) -> tuple:
@@ -326,14 +451,17 @@ class NCFFederatedServer:
             self._bridge_and_catalog(item_ids, model.Q, rng)
 
             self._setp("persisting serving model", 0.95)
-            self._save(cfg.gen_meta(len(clients)))
+            meta = cfg.gen_meta(len(clients))
+            meta["catalog"] = int(len(self.cat_ids))
+            meta["personalization"] = "user_local (ratings + basket)"
+            meta["saved_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            meta["trained_in_s"] = round(time.time() - t0, 1)
+            self._save(meta)
             with self._lock:
                 self.status = "ready"
                 self.progress = 1.0
                 self.message = f"ready in {time.time() - t0:.1f}s "
-                self.meta = cfg.gen_meta(len(clients))
-                self.meta["catalog"] = int(len(self.cat_ids))
-                self.meta["personalization"] = "user_local_only"
+                self.meta = meta
         except Exception as e:
             log.exception("NCF serving training failed")
             with self._lock:

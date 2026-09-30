@@ -22,6 +22,9 @@ TMDB_API_KEY = os.environ.get("TMDB_KEY", "")
 
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "movielens.db"
+FL_RESULT_FILE = DATA_DIR / "fl_result.json"
+SWEEP_RESULT_FILE = DATA_DIR / "ncf_sweep_results.json"
+SWEEP_ATTACK_CSV = DATA_DIR / "ncf_attack_results.csv"
 
 SECRET_KEY = os.environ.get("APP_SECRET", "seminar-demo-secret-change-me")
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 14
