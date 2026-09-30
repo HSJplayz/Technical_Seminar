@@ -224,6 +224,8 @@ table.data th { background: #f0f2f2; }
 }
 .xai-btn:hover { background: #f0f2f2; }
 .xai-panel { border-left: 4px solid var(--orange); }
+.xai-prose { margin: 10px 0 0; font-size: 15px; line-height: 1.7; color: #0f1111;
+  background: #fdfbf4; border: 1px solid #eee9d8; border-radius: 8px; padding: 12px 14px; }
 .xai-narrative { margin: 10px 0 0; padding-left: 2px; list-style: none; }
 .xai-narrative li { margin: 8px 0; font-size: 14px; line-height: 1.55; color: #111; padding-left: 18px; position: relative; }
 .xai-narrative li::before { content: "▸"; position: absolute; left: 0; color: var(--orange); }

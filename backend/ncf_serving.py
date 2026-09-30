@@ -248,8 +248,9 @@ class NCFFederatedServer:
         """Explain each movie with a local linear surrogate over the 19 genre
         features, fit in the movie's genre neighbourhood using ONLY this user's
         personal vector P_u + the public catalog. Returns genre SHAP values of
-        the surrogate (exact for linear models) plus a plain-text narrative
-        built from the user's own ratings + basket + the public catalog."""
+        the surrogate (exact for linear models) plus a plain-text narrative and a
+        natural-language paragraph built from the user's own ratings + basket +
+        the public catalog (deterministic, no external model)."""
         p, method = self._user_embedding(user_id)
         gvecs = self._load_genres_full()
         rng = np.random.default_rng(2026)
@@ -271,14 +272,17 @@ class NCFFederatedServer:
             z = sum(v for _, v in top)
             e = self.cat_emb[idx]
             narrative = self._narrative(m, rates, rated_genres, user_avg,
-                                        list(IMPLICIT_RATING), list_status(user_id, int(mid)))
+                                        list(IMPLICIT_RATING),
+                                        list_status(user_id, int(mid)))
+            score = round(self._score_pair(p, e), 3)
+            prose = self._prose(m, narrative, top, score, round(base_pred, 3))
             exps.append({
                 "movieId": int(mid),
                 "title_clean": m["title_clean"],
                 "year": m["year"],
                 "poster_url": m["poster_url"],
                 "genres": m["genre_list"],
-                "score": round(self._score_pair(p, e), 3),
+                "score": score,
                 "proxy_score": round(proxy_pred, 3),
                 "base_score": round(base_pred, 3),
                 "sum_attributions": round(float(sum(phis)), 3),
@@ -288,6 +292,7 @@ class NCFFederatedServer:
                     for feat, v in top
                 ],
                 "narrative": narrative,
+                "prose": prose,
             })
         return {
             "explanations": exps,
@@ -368,6 +373,65 @@ class NCFFederatedServer:
             "in_basket": in_basket,
             "basket_boost": IMPLICIT_RATING.get(in_basket) if in_basket else None,
         }
+
+    def _prose(self, m: dict, narr: dict, attr_top: list[tuple],
+               score: float, base_score: float) -> str:
+        """Deterministic natural-language paragraph built from the same data the
+        bullets/SHAP bars use — no external model, so it can never expire or
+        need credentials."""
+        title = m["title_clean"]
+        target = {g for g in m["genre_list"] if g and g != "(no genres listed)"}
+        parts = []
+        if base_score is not None:
+            parts.append(
+                f"I estimate \u201c{title}\u201d at {score:.2f}/5 for you, against a catalog "
+                f"baseline of {base_score:.2f}/5.")
+        else:
+            parts.append(f"I estimate \u201c{title}\u201d at {score:.2f}/5 for you.")
+        avg = narr.get("user_avg_rating")
+        if avg is not None:
+            parts.append(
+                f"Your own average sits at {avg:.2f}/5 across your {narr.get('you_rate_count', 0)} ratings.")
+        ups = [a for a in attr_top if a[1] >= 0][:3]
+        downs = [a for a in attr_top if a[1] < 0][:2]
+        max_abs = max((abs(v) for _, v in attr_top), default=0.0)
+
+        def desc(ft: str, v: float) -> str:
+            return f"{ft} ({'+' if v >= 0 else ''}{v:.2f})"
+
+        if max_abs >= 0.02 and ups and downs:
+            parts.append(
+                f"The predicted score swings mostly on {', '.join(desc(*a) for a in ups)}, while "
+                f"{', '.join(desc(*a) for a in downs)} pulls it the other way.")
+        elif max_abs >= 0.02 and ups:
+            parts.append(f"The predicted score swings mostly on {', '.join(desc(*a) for a in ups)}.")
+        elif max_abs >= 0.02 and downs:
+            parts.append(f"The predicted score is dragged down mainly by {', '.join(desc(*a) for a in downs)}.")
+        avgs = narr.get("genre_averages") or []
+        own = [a for a in avgs if a["genre"] in target]
+        if own:
+            taste = ", ".join(f"{a['genre']} ~{a['avg']:.2f}" for a in own[:4])
+            parts.append(f"That fits your taste: in this movie's genres you average about {taste}.")
+        sim = narr.get("similar") or []
+        if sim:
+            close = "; ".join(
+                f"\u201c{s.get('title_clean')}\u201d ({s.get('rating'):.1f}/5)" for s in sim[:3])
+            parts.append(f"Closest titles you have rated: {close}.")
+        if narr.get("in_basket"):
+            saved = "favorited" if narr["in_basket"] == "favorite" else "saved for later"
+            parts.append(
+                f"You {saved} this movie, which we count as an implicit "
+                f"{narr.get('basket_boost', 0):.2f}/5 rating, so it gets a personal lift.")
+        if avg is not None:
+            diff = score - avg
+            if diff >= 0.25:
+                line = "a strong match for your taste."
+            elif diff < -0.25:
+                line = "a lighter pick relative to your average."
+            else:
+                line = "right in line with your usual ratings."
+            parts.append(f"Overall this reads as {line}")
+        return " ".join(parts)
 
     def _surrogate_attrs(self, p, idx: int, gvecs: np.ndarray, rng, n_nb: int = 240) -> tuple:
         """Fit s_j ≈ g_j·w + c over a neighbourhood that mixes other movies sharing

@@ -430,6 +430,7 @@
     const up = attrs.filter(a => a.importance >= 0).slice(0, 3);
     const down = attrs.filter(a => a.importance < 0).slice(0, 3);
     const lines = [];
+    const prose = nav.prose || x.prose || "";
 
     lines.push(`<li><b>Predicted ${x.score}/5</b> for you, vs a catalog baseline of ${x.base_score != null ? x.base_score + "/5" : "—"}.</li>`);
     if (up.length) {
@@ -478,6 +479,7 @@
       <h3>Why ${escapeHtml(x.title_clean)}? ${x.year ? `<small style="color:#565959;font-weight:400">(${x.year})</small>` : ""}
         <span class="pill blue">pred ${x.score}/5</span></h3>
       <p class="card-meta">${escapeHtml((x.genres || []).join(" · "))}</p>
+      ${prose ? `<p class="xai-prose">${escapeHtml(prose)}</p>` : ""}
       <ul class="xai-narrative">${lines.join("")}</ul>
       <details class="xai-detail">${barHTML}</details>`;
     return panel;
