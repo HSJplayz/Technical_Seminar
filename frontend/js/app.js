@@ -648,6 +648,39 @@
     const similarBox = detail.querySelector(".similar-section");
     similarBox.appendChild(grid(d.similar));
 
+    // NCF XAI: why this title is recommended for THIS user
+    const xaiBody = el("div");
+    xaiBody.style.marginTop = "20px";
+    xaiBody.style.marginBottom = "8px";
+    detail.insertBefore(xaiBody, similarBox);
+    if (state.user) {
+      try {
+        const ncf = await api("/api/ncf/status");
+        if (ncf.status === "ready") {
+          const xr = await api("/api/ncf/xai", { method: "POST", body: JSON.stringify({ items: [id] }) });
+          const head = el("h3", "section-title",
+            `Why this is recommended for you <small>· personalized NCF · SHAP</small>`);
+          xaiBody.appendChild(head);
+          if (xr.explanations && xr.explanations.length) {
+            renderNcfXai(xaiBody, xr, false);
+          } else {
+            xaiBody.appendChild(el("p", "card-meta",
+              "This title is outside the NCF catalog neighborhood — no personalized explanation available."));
+          }
+        } else {
+          const p = el("p", "card-meta");
+          p.innerHTML = `NCF model not ready (${escapeHtml(ncf.message || ncf.status)}) — the personalized explanation is unavailable right now.`;
+          xaiBody.appendChild(p);
+        }
+      } catch (e) {
+        xaiBody.appendChild(el("p", "card-meta", escapeHtml(e.message)));
+      }
+    } else {
+      const p = el("p", "card-meta");
+      p.innerHTML = `Sign in to see a personalized explanation of why this title was recommended for you.`;
+      xaiBody.appendChild(p);
+    }
+
     if (state.user) renderRateStars(d.my_rating, async val => {
       await api("/api/rate", { method: "POST", body: JSON.stringify({ movieId: id, rating: val }) });
       toast("Rating saved — it only leaves this browser as a federated update");
